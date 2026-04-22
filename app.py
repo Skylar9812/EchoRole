@@ -3,7 +3,6 @@ import streamlit as st
 import uuid
 import random
 import string
-import json
 
 from database import (
     init_db,
@@ -20,8 +19,8 @@ from database import (
     get_all_roles_in_session,
     add_ai_message,
     get_ai_messages,
-    has_ai_prompt_for_stage,
-    update_session_stage
+    has_ai_prompt_for_turn,
+    advance_session_turn
 )
 
 init_db()
@@ -84,29 +83,11 @@ def generate_demo_scenario():
         "conflict": "The manager thinks the team member is not responsive enough. The team member feels overloaded and unsupported.",
         "role_a_brief": "You are the manager. You are worried the delay will affect the client relationship.",
         "role_b_brief": "You are the team member. You believe expectations are unrealistic and communication has been one-sided.",
-        "stages": [
-            {
-                "stage_index": 1,
-                "title": "Immediate Reflection",
-                "goal": "Each side reflects on the conflict from their own perspective.",
-                "prompt_a": "Looking back at the earlier interaction, what consequences might your expression have on management effectiveness and long-term team stability?",
-                "prompt_b": "You feel the evaluation was unfair and the tone hurt you. How do you plan to handle your next action and communication?"
-            },
-            {
-                "stage_index": 2,
-                "title": "First Repair Attempt",
-                "goal": "One side initiates follow-up action and the other side reacts.",
-                "prompt_a": "You are considering sending a private apology message first. What exactly would you say, and what result do you want?",
-                "prompt_b": "Your supervisor has sent an apology and proposed a follow-up conversation. What is your first reaction, and what do you want to clarify?"
-            },
-            {
-                "stage_index": 3,
-                "title": "Stabilizing the Relationship",
-                "goal": "Both sides attempt to re-establish a clearer working relationship.",
-                "prompt_a": "How would you explain your expectations more clearly next time without letting emotional noise take over?",
-                "prompt_b": "What kind of communication boundary would help you feel respected while still keeping the conversation constructive?"
-            }
-        ]
+        "opening_situation": (
+            "In a team check-in, the delayed launch timeline becomes impossible to ignore. "
+            "The manager raises concerns about responsiveness, while the team member feels cornered and unsupported. "
+            "Both people leave the exchange tense and uncertain about what should happen next."
+        )
     }
 
 
@@ -124,11 +105,12 @@ def get_current_stage_obj(current_session):
     [0]=id, [1]=room_id, [2]=scenario_title, [3]=scenario_context, [4]=conflict,
     [5]=role_a_brief, [6]=role_b_brief, [7]=stages_json, [8]=current_stage, [9]=created_at
     """
+    # current_session uses the dictionary shape returned by database.get_session_by_room().
     if current_session is None:
         return None
 
-    stages = json.loads(current_session[7]) if current_session[7] else []
-    current_stage_index = current_session[8]
+    stages = current_session.get("stages", [])
+    current_stage_index = current_session.get("current_stage", 1)
 
     for stage in stages:
         if stage.get("stage_index") == current_stage_index:
@@ -198,8 +180,93 @@ def get_stage_count(current_session):
     if current_session is None:
         return 0
 
-    stages = json.loads(current_session[7]) if current_session[7] else []
-    return len(stages)
+    return len(current_session.get("stages", []))
+
+
+def get_role_brief(current_session, user_role):
+    if user_role == "role_a":
+        return current_session.get("role_a_brief", "")
+    if user_role == "role_b":
+        return current_session.get("role_b_brief", "")
+    return ""
+
+
+def get_role_label(user_role):
+    if user_role == "role_a":
+        return "the manager"
+    if user_role == "role_b":
+        return "the team member"
+    return "your role"
+
+
+def build_turn_coach_prompt(current_session, user_role):
+    role_brief = get_role_brief(current_session, user_role)
+    if role_brief.strip() == "":
+        return ""
+
+    return (
+        f"Turn {current_session['current_turn']}\n\n"
+        f"Current situation: {current_session['current_situation']}\n\n"
+        f"Your private role brief: {role_brief}\n\n"
+        "Reflect on what matters most to you right now, what risk you see in the situation, "
+        "and what move you are considering next. Reply naturally and the coach will help you think it through."
+    )
+
+
+def classify_action_signal(text):
+    lowered = text.lower()
+
+    if any(keyword in lowered for keyword in ["apolog", "sorry", "repair", "listen", "understand", "acknowledge"]):
+        return "repair"
+    if any(keyword in lowered for keyword in ["ask", "clarify", "question", "discuss", "meet", "explain"]):
+        return "clarify"
+    if any(keyword in lowered for keyword in ["demand", "insist", "fault", "blame", "must", "warn"]):
+        return "escalate"
+    return "explore"
+
+
+def generate_dynamic_ai_feedback(user_role, user_text, current_turn, current_situation):
+    signal = classify_action_signal(user_text)
+    role_label = get_role_label(user_role)
+
+    if signal == "repair":
+        coaching_focus = "That move can reduce defensiveness, but it will only feel credible if your wording is specific and accountable."
+    elif signal == "clarify":
+        coaching_focus = "Clarifying can be productive here, especially if you separate facts, emotions, and requests instead of blending them together."
+    elif signal == "escalate":
+        coaching_focus = "That move may create short-term control, but it also risks hardening the other person's stance and narrowing the room for repair."
+    else:
+        coaching_focus = "There is room to explore, but you may need to state your intention more clearly so the next move changes the interaction instead of prolonging uncertainty."
+
+    return (
+        f"From {role_label}'s perspective in turn {current_turn}, notice what this situation is pulling you toward: "
+        f"{current_situation} {coaching_focus} "
+        "Before you act, try naming the outcome you want, the emotion you need to regulate, and the one sentence you most want the other person to understand."
+    )
+
+
+def generate_next_situation(current_session, user_role, action_text):
+    signal = classify_action_signal(action_text)
+    actor_label = get_role_label(user_role)
+    other_label = "the team member" if user_role == "role_a" else "the manager"
+    current_turn = current_session["current_turn"]
+    current_situation = current_session["current_situation"]
+    conflict = current_session["conflict"]
+
+    if signal == "repair":
+        shift = f"{other_label} becomes slightly less guarded, but now pays close attention to whether the tone change is genuine and sustainable."
+    elif signal == "clarify":
+        shift = f"The conversation becomes more specific, and {other_label} starts reacting to concrete requests instead of only reacting to tone."
+    elif signal == "escalate":
+        shift = f"The pressure rises, and {other_label} becomes more defensive while also feeling forced to respond more directly."
+    else:
+        shift = f"The interaction moves forward, but {other_label} is still uncertain about the real intent behind the move."
+
+    return (
+        f"Turn {current_turn + 1} begins. After {actor_label} chooses to {action_text.strip()}, "
+        f"the situation evolves from this moment: {current_situation} {shift} "
+        f"The underlying tension is still: {conflict}"
+    )
 
 
 st.title("EchoRole")
@@ -306,7 +373,7 @@ else:
                 scenario["conflict"],
                 scenario["role_a_brief"],
                 scenario["role_b_brief"],
-                scenario["stages"]
+                scenario["opening_situation"]
             )
 
             members = get_members_by_room(st.session_state.room_id)
@@ -321,17 +388,19 @@ else:
 
     else:
         session_id = current_session["id"]
-        scenario_title = current_session["scenario_title"]
-        scenario_context = current_session["scenario_context"]
+        scenario_title = current_session["title"]
+        scenario_context = current_session["context"]
         conflict = current_session["conflict"]
         role_a_brief = current_session["role_a_brief"]
         role_b_brief = current_session["role_b_brief"]
-        current_stage_index = current_session["current_stage"]
+        current_turn = current_session["current_turn"]
+        current_situation = current_session["current_situation"]
 
         st.write("**Title:**", scenario_title)
         st.write("**Context:**", scenario_context)
         st.write("**Conflict:**", conflict)
-        st.write("**Current Stage:**", current_stage_index)
+        st.write("**Current Turn:**", current_turn)
+        st.write("**Current Situation:**", current_situation)
 
         user_role = get_user_role(session_id, st.session_state.user_id)
 
@@ -357,45 +426,31 @@ else:
             st.write("Your role: B")
         else:
             st.warning("Your role has not been assigned yet.")
-
-        current_stage_obj = get_current_stage_obj(current_session)
-        stage_prompt = get_stage_prompt_for_role(current_stage_obj, user_role)
-        stage_count = get_stage_count(current_session)
-
-        with st.expander("View Stage Framework"):
-            stages = json.loads(current_session["stages_json"]) if current_session["stages_json"] else []
-            current_stage_index = current_session["current_stage"]
-            for stage in stages:
-                st.markdown(f"### Stage {stage.get('stage_index')} - {stage.get('title', '')}")
-                if stage.get("goal"):
-                    st.write(f"**Goal:** {stage.get('goal')}")
-                st.write(f"**Prompt A:** {stage.get('prompt_a', '')}")
-                st.write(f"**Prompt B:** {stage.get('prompt_b', '')}")
-                st.markdown("---")
+        turn_prompt = build_turn_coach_prompt(current_session, user_role)
 
         st.markdown("---")
         st.subheader("AI Coach Chat")
 
         # 第一次进入当前 stage 时，自动写入首条 AI prompt
-        if user_role is not None and not has_ai_prompt_for_stage(
+        if user_role is not None and not has_ai_prompt_for_turn(
             session_id,
-            current_stage_index,
+            current_turn,
             st.session_state.user_id
         ):
-            if stage_prompt.strip():
+            if turn_prompt.strip():
                 add_ai_message(
                     session_id=session_id,
-                    stage_index=current_stage_index,
+                    turn_index=current_turn,
                     user_id=st.session_state.user_id,
                     role_name=user_role,
                     sender="ai",
-                    content=stage_prompt
+                    content=turn_prompt
                 )
                 st.rerun()
 
         ai_messages = get_ai_messages(
             session_id=session_id,
-            stage_index=current_stage_index,
+            turn_index=current_turn,
             user_id=st.session_state.user_id
         )
 
@@ -409,6 +464,8 @@ else:
 
                 if sender == "ai":
                     st.info(f"AI: {content}")
+                elif sender == "action":
+                    st.caption(f"Your submitted action: {content}")
                 else:
                     st.write(f"**You:** {content}")
 
@@ -422,22 +479,23 @@ else:
                 else:
                     add_ai_message(
                         session_id=session_id,
-                        stage_index=current_stage_index,
+                        turn_index=current_turn,
                         user_id=st.session_state.user_id,
                         role_name=user_role,
                         sender="user",
                         content=ai_input.strip()
                     )
 
-                    ai_feedback = generate_fake_ai_feedback(
+                    ai_feedback = generate_dynamic_ai_feedback(
                         user_role=user_role,
                         user_text=ai_input.strip(),
-                        stage_index=current_stage_index
+                        current_turn=current_turn,
+                        current_situation=current_situation
                     )
 
                     add_ai_message(
                         session_id=session_id,
-                        stage_index=current_stage_index,
+                        turn_index=current_turn,
                         user_id=st.session_state.user_id,
                         role_name=user_role,
                         sender="ai",
@@ -446,20 +504,45 @@ else:
 
                     st.rerun()
 
-        col1, col2 = st.columns(2)
+        st.subheader("Submit Turn Action")
+        st.caption("Use one concrete action to push the shared story into the next turn.")
 
-        with col1:
-            if st.button("Advance Scenario"):
-                if current_stage_index < stage_count:
-                    update_session_stage(session_id, current_stage_index + 1)
-                    st.success(f"Scenario advanced to stage {current_stage_index + 1}")
-                    st.rerun()
+        with st.form("turn_action_form", clear_on_submit=True):
+            action_input = st.text_area("What action do you want to take next?")
+            action_submit = st.form_submit_button("Submit Action and Advance Turn")
+
+            if action_submit:
+                if action_input.strip() == "":
+                    st.error("Action cannot be empty.")
                 else:
-                    st.info("You are already at the final stage.")
+                    next_situation = generate_next_situation(
+                        current_session=current_session,
+                        user_role=user_role,
+                        action_text=action_input.strip()
+                    )
 
-        with col2:
-            if st.button("Reload Stage"):
-                st.rerun()
+                    advanced = advance_session_turn(
+                        session_id=session_id,
+                        expected_turn=current_turn,
+                        new_situation=next_situation
+                    )
+
+                    if advanced:
+                        add_ai_message(
+                            session_id=session_id,
+                            turn_index=current_turn,
+                            user_id=st.session_state.user_id,
+                            role_name=user_role,
+                            sender="action",
+                            content=action_input.strip()
+                        )
+                        st.success(f"Story advanced to turn {current_turn + 1}")
+                        st.rerun()
+                    else:
+                        st.warning("This turn was already advanced elsewhere. Reload to see the latest situation.")
+
+        if st.button("Reload Turn"):
+            st.rerun()
 
     st.markdown("---")
     st.subheader("Shared Role-play Chat")
