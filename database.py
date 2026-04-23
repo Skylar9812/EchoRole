@@ -59,6 +59,7 @@ def init_db():
         role_a_brief TEXT,
         role_b_brief TEXT,
         stages_json TEXT,
+        opening_situation TEXT,
         current_stage INTEGER DEFAULT 1,
         current_situation TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -72,6 +73,9 @@ def init_db():
 
     if "stages_json" not in columns:
         cursor.execute("ALTER TABLE sessions ADD COLUMN stages_json TEXT")
+
+    if "opening_situation" not in columns:
+        cursor.execute("ALTER TABLE sessions ADD COLUMN opening_situation TEXT")
 
     if "current_stage" not in columns:
         cursor.execute("ALTER TABLE sessions ADD COLUMN current_stage INTEGER DEFAULT 1")
@@ -105,6 +109,20 @@ def init_db():
     )
     """)
 
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS turn_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER NOT NULL,
+        turn_index INTEGER NOT NULL,
+        acting_user_id TEXT NOT NULL,
+        role_name TEXT NOT NULL,
+        submitted_action TEXT NOT NULL,
+        resulting_situation TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (session_id) REFERENCES sessions(id)
+    )
+    """)
+
     # 唯一索引，避免重复数据
     cursor.execute("""
     CREATE UNIQUE INDEX IF NOT EXISTS idx_members_user_room
@@ -119,6 +137,11 @@ def init_db():
     cursor.execute("""
     CREATE UNIQUE INDEX IF NOT EXISTS idx_session_roles_role_session
     ON session_roles(session_id, role_name)
+    """)
+
+    cursor.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_turn_history_session_turn
+    ON turn_history(session_id, turn_index)
     """)
 
     conn.commit()
@@ -252,10 +275,11 @@ def create_session(
             role_a_brief,
             role_b_brief,
             stages_json,
+            opening_situation,
             current_stage,
             current_situation
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             room_id,
@@ -265,6 +289,7 @@ def create_session(
             role_a_brief,
             role_b_brief,
             json.dumps([], ensure_ascii=False),
+            opening_situation,
             1,
             opening_situation
         )
@@ -302,6 +327,7 @@ def get_session_by_room(room_id):
             conflict,
             role_a_brief,
             role_b_brief,
+            opening_situation,
             current_stage,
             current_situation,
             created_at
@@ -322,6 +348,7 @@ def get_session_by_room(room_id):
     current_turn = row["current_stage"] if row["current_stage"] is not None else 1
     current_situation = (
         row["current_situation"]
+        or row["opening_situation"]
         or row["scenario_context"]
         or row["conflict"]
         or ""
@@ -335,6 +362,7 @@ def get_session_by_room(room_id):
         "conflict": row["conflict"],
         "role_a_brief": row["role_a_brief"],
         "role_b_brief": row["role_b_brief"],
+        "opening_situation": row["opening_situation"] or current_situation,
         "current_turn": current_turn,
         "current_situation": current_situation,
         "created_at": row["created_at"],
@@ -419,6 +447,87 @@ def get_current_turn_data(session):
     }
 
 
+def get_turn_history(session_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT
+            turn_index,
+            acting_user_id,
+            role_name,
+            submitted_action,
+            resulting_situation,
+            created_at
+        FROM turn_history
+        WHERE session_id = ?
+        ORDER BY turn_index ASC, id ASC
+        """,
+        (session_id,)
+    )
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [
+        {
+            "turn_index": row["turn_index"],
+            "acting_user_id": row["acting_user_id"],
+            "role_name": row["role_name"],
+            "submitted_action": row["submitted_action"],
+            "resulting_situation": row["resulting_situation"],
+            "created_at": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
+def get_progression_history(session_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT
+            scenario_title,
+            scenario_context,
+            conflict,
+            opening_situation,
+            current_stage,
+            current_situation
+        FROM sessions
+        WHERE id = ?
+        LIMIT 1
+        """,
+        (session_id,)
+    )
+
+    row = cursor.fetchone()
+    conn.close()
+
+    if row is None:
+        return None
+
+    opening_situation = (
+        row["opening_situation"]
+        or row["current_situation"]
+        or row["scenario_context"]
+        or row["conflict"]
+        or ""
+    )
+
+    return {
+        "title": row["scenario_title"],
+        "context": row["scenario_context"],
+        "conflict": row["conflict"],
+        "opening_situation": opening_situation,
+        "current_turn": row["current_stage"] if row["current_stage"] is not None else 1,
+        "current_situation": row["current_situation"] or opening_situation,
+        "turns": get_turn_history(session_id),
+    }
+
+
 def add_ai_message(session_id, turn_index, user_id, role_name, sender, content):
     conn = get_connection()
     cursor = conn.cursor()
@@ -493,6 +602,63 @@ def advance_session_turn(session_id, expected_turn, new_situation):
     advanced = cursor.rowcount == 1
     conn.close()
     return advanced
+
+
+def complete_turn(
+    session_id,
+    expected_turn,
+    acting_user_id,
+    role_name,
+    submitted_action,
+    resulting_situation
+):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute(
+            """
+            INSERT INTO turn_history (
+                session_id,
+                turn_index,
+                acting_user_id,
+                role_name,
+                submitted_action,
+                resulting_situation
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                expected_turn,
+                acting_user_id,
+                role_name,
+                submitted_action,
+                resulting_situation
+            )
+        )
+
+        cursor.execute(
+            """
+            UPDATE sessions
+            SET current_stage = current_stage + 1,
+                current_situation = ?
+            WHERE id = ? AND current_stage = ?
+            """,
+            (resulting_situation, session_id, expected_turn)
+        )
+
+        if cursor.rowcount != 1:
+            conn.rollback()
+            return False
+
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
 
 
 def has_ai_prompt_for_stage(session_id, stage_index, user_id):

@@ -4,6 +4,13 @@ import uuid
 import random
 import string
 
+from ai_engine import (
+    build_turn_coach_prompt,
+    generate_dynamic_ai_feedback,
+    generate_next_situation,
+    validate_turn_action
+)
+
 from database import (
     init_db,
     create_room,
@@ -20,7 +27,7 @@ from database import (
     add_ai_message,
     get_ai_messages,
     has_ai_prompt_for_turn,
-    advance_session_turn
+    complete_turn
 )
 
 init_db()
@@ -181,92 +188,6 @@ def get_stage_count(current_session):
         return 0
 
     return len(current_session.get("stages", []))
-
-
-def get_role_brief(current_session, user_role):
-    if user_role == "role_a":
-        return current_session.get("role_a_brief", "")
-    if user_role == "role_b":
-        return current_session.get("role_b_brief", "")
-    return ""
-
-
-def get_role_label(user_role):
-    if user_role == "role_a":
-        return "the manager"
-    if user_role == "role_b":
-        return "the team member"
-    return "your role"
-
-
-def build_turn_coach_prompt(current_session, user_role):
-    role_brief = get_role_brief(current_session, user_role)
-    if role_brief.strip() == "":
-        return ""
-
-    return (
-        f"Turn {current_session['current_turn']}\n\n"
-        f"Current situation: {current_session['current_situation']}\n\n"
-        f"Your private role brief: {role_brief}\n\n"
-        "Reflect on what matters most to you right now, what risk you see in the situation, "
-        "and what move you are considering next. Reply naturally and the coach will help you think it through."
-    )
-
-
-def classify_action_signal(text):
-    lowered = text.lower()
-
-    if any(keyword in lowered for keyword in ["apolog", "sorry", "repair", "listen", "understand", "acknowledge"]):
-        return "repair"
-    if any(keyword in lowered for keyword in ["ask", "clarify", "question", "discuss", "meet", "explain"]):
-        return "clarify"
-    if any(keyword in lowered for keyword in ["demand", "insist", "fault", "blame", "must", "warn"]):
-        return "escalate"
-    return "explore"
-
-
-def generate_dynamic_ai_feedback(user_role, user_text, current_turn, current_situation):
-    signal = classify_action_signal(user_text)
-    role_label = get_role_label(user_role)
-
-    if signal == "repair":
-        coaching_focus = "That move can reduce defensiveness, but it will only feel credible if your wording is specific and accountable."
-    elif signal == "clarify":
-        coaching_focus = "Clarifying can be productive here, especially if you separate facts, emotions, and requests instead of blending them together."
-    elif signal == "escalate":
-        coaching_focus = "That move may create short-term control, but it also risks hardening the other person's stance and narrowing the room for repair."
-    else:
-        coaching_focus = "There is room to explore, but you may need to state your intention more clearly so the next move changes the interaction instead of prolonging uncertainty."
-
-    return (
-        f"From {role_label}'s perspective in turn {current_turn}, notice what this situation is pulling you toward: "
-        f"{current_situation} {coaching_focus} "
-        "Before you act, try naming the outcome you want, the emotion you need to regulate, and the one sentence you most want the other person to understand."
-    )
-
-
-def generate_next_situation(current_session, user_role, action_text):
-    signal = classify_action_signal(action_text)
-    actor_label = get_role_label(user_role)
-    other_label = "the team member" if user_role == "role_a" else "the manager"
-    current_turn = current_session["current_turn"]
-    current_situation = current_session["current_situation"]
-    conflict = current_session["conflict"]
-
-    if signal == "repair":
-        shift = f"{other_label} becomes slightly less guarded, but now pays close attention to whether the tone change is genuine and sustainable."
-    elif signal == "clarify":
-        shift = f"The conversation becomes more specific, and {other_label} starts reacting to concrete requests instead of only reacting to tone."
-    elif signal == "escalate":
-        shift = f"The pressure rises, and {other_label} becomes more defensive while also feeling forced to respond more directly."
-    else:
-        shift = f"The interaction moves forward, but {other_label} is still uncertain about the real intent behind the move."
-
-    return (
-        f"Turn {current_turn + 1} begins. After {actor_label} chooses to {action_text.strip()}, "
-        f"the situation evolves from this moment: {current_situation} {shift} "
-        f"The underlying tension is still: {conflict}"
-    )
 
 
 st.title("EchoRole")
@@ -515,16 +436,37 @@ else:
                 if action_input.strip() == "":
                     st.error("Action cannot be empty.")
                 else:
+                    validation = validate_turn_action(
+                        action_text=action_input.strip(),
+                        current_session=current_session,
+                        user_role=user_role
+                    )
+
+                    if not validation["is_valid"]:
+                        add_ai_message(
+                            session_id=session_id,
+                            turn_index=current_turn,
+                            user_id=st.session_state.user_id,
+                            role_name=user_role,
+                            sender="ai",
+                            content=validation["feedback"]
+                        )
+                        st.warning("Revise the action before advancing the turn.")
+                        st.rerun()
+
                     next_situation = generate_next_situation(
                         current_session=current_session,
                         user_role=user_role,
                         action_text=action_input.strip()
                     )
 
-                    advanced = advance_session_turn(
+                    advanced = complete_turn(
                         session_id=session_id,
                         expected_turn=current_turn,
-                        new_situation=next_situation
+                        acting_user_id=st.session_state.user_id,
+                        role_name=user_role,
+                        submitted_action=action_input.strip(),
+                        resulting_situation=next_situation
                     )
 
                     if advanced:
