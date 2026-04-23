@@ -16,7 +16,9 @@ from database import (
     create_room,
     get_room_by_code,
     add_member,
+    remove_member,
     get_members_by_room,
+    can_user_join_room,
     add_message,
     get_messages_by_room,
     create_session,
@@ -59,9 +61,20 @@ if st.session_state.username == "" and "username" in query_params:
 if st.session_state.invite_code is None and "invite_code" in query_params:
     code_from_url = query_params["invite_code"]
     room = get_room_by_code(code_from_url)
-    if room:
-        st.session_state.invite_code = code_from_url
-        st.session_state.room_id = room[0]
+    if room and st.session_state.user_id is not None:
+        room_id_from_url = room[0]
+        can_restore, _ = can_user_join_room(
+            room_id_from_url,
+            st.session_state.user_id
+        )
+        if can_restore:
+            add_member(
+                st.session_state.user_id,
+                room_id_from_url,
+                st.session_state.username
+            )
+            st.session_state.invite_code = code_from_url
+            st.session_state.room_id = room_id_from_url
 
 
 def save_user_to_url():
@@ -237,17 +250,24 @@ if st.session_state.room_id is None:
 
                 room_id = room[0]
                 invite_code = room[1]
-
-                add_member(
-                    st.session_state.user_id,
+                can_join, join_reason = can_user_join_room(
                     room_id,
-                    st.session_state.username
+                    st.session_state.user_id
                 )
 
-                st.session_state.room_id = room_id
-                st.session_state.invite_code = invite_code
-                save_user_to_url()
-                st.rerun()
+                if not can_join:
+                    st.error(join_reason)
+                else:
+                    add_member(
+                        st.session_state.user_id,
+                        room_id,
+                        st.session_state.username
+                    )
+
+                    st.session_state.room_id = room_id
+                    st.session_state.invite_code = invite_code
+                    save_user_to_url()
+                    st.rerun()
             else:
                 st.error("Invalid invite code")
 
@@ -328,13 +348,20 @@ else:
         if user_role is None:
             all_roles = get_all_roles_in_session(session_id)
             assigned_role_names = [row[1] for row in all_roles]
+            role_assigned = False
 
             if "role_a" not in assigned_role_names:
                 assign_role(session_id, st.session_state.user_id, "role_a")
+                role_assigned = True
             elif "role_b" not in assigned_role_names:
                 assign_role(session_id, st.session_state.user_id, "role_b")
+                role_assigned = True
 
-            st.rerun()
+            if role_assigned:
+                st.rerun()
+
+            st.error("This active session already has two assigned participants.")
+            st.stop()
 
         user_role = get_user_role(session_id, st.session_state.user_id)
 
@@ -522,6 +549,11 @@ else:
         st.rerun()
 
     if st.button("Leave Room"):
+        if st.session_state.user_id and st.session_state.room_id:
+            remove_member(
+                st.session_state.user_id,
+                st.session_state.room_id
+            )
         st.session_state.room_id = None
         st.session_state.invite_code = None
         clear_url()

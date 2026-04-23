@@ -198,7 +198,33 @@ def add_member(user_id, room_id, nickname=None):
             (user_id, room_id, nickname)
         )
         conn.commit()
+    elif nickname is not None:
+        cursor.execute(
+            """
+            UPDATE members
+            SET nickname = ?
+            WHERE user_id = ? AND room_id = ?
+            """,
+            (nickname, user_id, room_id)
+        )
+        conn.commit()
 
+    conn.close()
+
+
+def remove_member(user_id, room_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        DELETE FROM members
+        WHERE user_id = ? AND room_id = ?
+        """,
+        (user_id, room_id)
+    )
+
+    conn.commit()
     conn.close()
 
 
@@ -219,6 +245,33 @@ def get_members_by_room(room_id):
     conn.close()
 
     return [(row["user_id"], row["nickname"], row["joined_at"]) for row in rows]
+
+
+def can_user_join_room(room_id, user_id, max_members=2):
+    if not user_id:
+        return False, "Please enter a username first."
+
+    members = get_members_by_room(room_id)
+    active_member_ids = [member[0] for member in members]
+
+    if user_id in active_member_ids:
+        return True, ""
+
+    if len(active_member_ids) >= max_members:
+        return False, "This room already has two active members."
+
+    current_session = get_session_by_room(room_id)
+    if current_session is not None:
+        role_rows = get_all_roles_in_session(current_session["id"])
+        role_user_ids = [row[0] for row in role_rows]
+
+        if user_id in role_user_ids:
+            return True, ""
+
+        if len(role_rows) >= max_members:
+            return False, "This session already has two assigned participants."
+
+    return True, ""
 
 
 def add_message(room_id, user_id, username, content):
