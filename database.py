@@ -48,6 +48,16 @@ def init_db():
     )
     """)
 
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS user_profiles (
+        user_id TEXT PRIMARY KEY,
+        display_name TEXT,
+        mbti TEXT,
+        priorities TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
     # sessions
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS sessions (
@@ -177,6 +187,76 @@ def get_room_by_code(invite_code):
     if row is None:
         return None
     return (row["id"], row["invite_code"], row["created_at"])
+
+
+def get_user_profile(user_id):
+    if not user_id:
+        return {
+            "user_id": user_id,
+            "display_name": "",
+            "mbti": "",
+            "priorities": "",
+            "updated_at": None,
+        }
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT user_id, display_name, mbti, priorities, updated_at
+        FROM user_profiles
+        WHERE user_id = ?
+        LIMIT 1
+        """,
+        (user_id,)
+    )
+
+    row = cursor.fetchone()
+    conn.close()
+
+    if row is None:
+        return {
+            "user_id": user_id,
+            "display_name": "",
+            "mbti": "",
+            "priorities": "",
+            "updated_at": None,
+        }
+
+    return {
+        "user_id": row["user_id"],
+        "display_name": row["display_name"] or "",
+        "mbti": row["mbti"] or "",
+        "priorities": row["priorities"] or "",
+        "updated_at": row["updated_at"],
+    }
+
+
+def save_user_profile(user_id, display_name=None, mbti=None, priorities=None):
+    if not user_id:
+        return
+
+    existing = get_user_profile(user_id)
+    new_display_name = existing["display_name"] if display_name is None else display_name
+    new_mbti = existing["mbti"] if mbti is None else mbti
+    new_priorities = existing["priorities"] if priorities is None else priorities
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        INSERT OR REPLACE INTO user_profiles (
+            user_id, display_name, mbti, priorities, updated_at
+        )
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """,
+        (user_id, new_display_name, new_mbti, new_priorities)
+    )
+
+    conn.commit()
+    conn.close()
 
 
 def add_member(user_id, room_id, nickname=None):

@@ -23,15 +23,72 @@ def get_role_label(user_role):
     return "your role"
 
 
-def build_turn_coach_prompt(current_session, user_role):
+def format_user_profile_context(user_profile):
+    if not user_profile:
+        return ""
+
+    parts = []
+    display_name = user_profile.get("display_name", "").strip()
+    mbti = user_profile.get("mbti", "").strip()
+    priorities = user_profile.get("priorities", "").strip()
+
+    if display_name:
+        parts.append(f"display name: {display_name}")
+    if mbti:
+        parts.append(f"MBTI: {mbti}")
+    if priorities:
+        parts.append(f"communication/value priorities: {priorities}")
+
+    if not parts:
+        return ""
+
+    return "; ".join(parts)
+
+
+def format_recent_turn_history(recent_turn_history):
+    if not recent_turn_history:
+        return ""
+
+    history_lines = []
+    for turn in recent_turn_history:
+        turn_index = turn.get("turn_index", "?")
+        role_name = turn.get("role_name", "unknown role")
+        action = turn.get("submitted_action", "")
+        result = turn.get("resulting_situation", "")
+        history_lines.append(
+            f"Turn {turn_index} by {role_name}: action={action}; result={result}"
+        )
+
+    return "\n".join(history_lines)
+
+
+def build_turn_coach_prompt(
+    current_session,
+    user_role,
+    user_profile=None,
+    recent_turn_history=None
+):
     role_brief = get_role_brief(current_session, user_role)
     if role_brief.strip() == "":
         return ""
+
+    profile_context = format_user_profile_context(user_profile)
+    recent_history_context = format_recent_turn_history(recent_turn_history)
+
+    profile_section = ""
+    if profile_context:
+        profile_section = f"Your profile context: {profile_context}\n\n"
+
+    history_section = ""
+    if recent_history_context:
+        history_section = f"Recent progression history:\n{recent_history_context}\n\n"
 
     return (
         f"Turn {current_session['current_turn']}\n\n"
         f"Current situation: {current_session['current_situation']}\n\n"
         f"Your private role brief: {role_brief}\n\n"
+        f"{profile_section}"
+        f"{history_section}"
         "Reflect on what matters most to you right now, what risk you see in the situation, "
         "and what move you are considering next. Reply naturally and the coach will help you think it through."
     )
@@ -156,9 +213,18 @@ def validate_turn_action(action_text, current_session, user_role):
     }
 
 
-def generate_dynamic_ai_feedback(user_role, user_text, current_turn, current_situation):
+def generate_dynamic_ai_feedback(
+    user_role,
+    user_text,
+    current_turn,
+    current_situation,
+    user_profile=None,
+    recent_turn_history=None
+):
     signal = classify_action_signal(user_text)
     role_label = get_role_label(user_role)
+    profile_context = format_user_profile_context(user_profile)
+    recent_history_context = format_recent_turn_history(recent_turn_history)
 
     if signal == "repair":
         coaching_focus = "That move can reduce defensiveness, but it will only feel credible if your wording is specific and accountable."
@@ -169,9 +235,18 @@ def generate_dynamic_ai_feedback(user_role, user_text, current_turn, current_sit
     else:
         coaching_focus = "There is room to explore, but you may need to state your intention more clearly so the next move changes the interaction instead of prolonging uncertainty."
 
+    personalization = ""
+    if profile_context:
+        personalization = f" Use your profile context ({profile_context}) as a lens, but do not let it become a fixed script."
+
+    continuity = ""
+    if recent_history_context:
+        continuity = " Also consider how this response fits the recent progression instead of treating the turn as isolated."
+
     return (
         f"From {role_label}'s perspective in turn {current_turn}, notice what this situation is pulling you toward: "
-        f"{current_situation} {coaching_focus} "
+        f"{current_situation} Your recent reflection was: \"{user_text.strip()}\". {coaching_focus}"
+        f"{personalization}{continuity} "
         "Before you act, try naming the outcome you want, the emotion you need to regulate, and the one sentence you most want the other person to understand."
     )
 

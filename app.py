@@ -19,6 +19,8 @@ from database import (
     remove_member,
     get_members_by_room,
     can_user_join_room,
+    get_user_profile,
+    save_user_profile,
     add_message,
     get_messages_by_room,
     create_session,
@@ -29,6 +31,7 @@ from database import (
     add_ai_message,
     get_ai_messages,
     has_ai_prompt_for_turn,
+    get_turn_history,
     complete_turn
 )
 
@@ -111,11 +114,17 @@ def generate_demo_scenario():
     }
 
 
-def ensure_user_created(username):
+def ensure_user_created(username, mbti=None, priorities=None):
     """只有第一次才创建 user_id"""
     if st.session_state.user_id is None:
         st.session_state.user_id = str(uuid.uuid4())
     st.session_state.username = username
+    save_user_profile(
+        st.session_state.user_id,
+        display_name=username,
+        mbti=mbti,
+        priorities=priorities
+    )
     save_user_to_url()
 
 
@@ -215,12 +224,30 @@ if st.session_state.room_id is None:
         value=st.session_state.username
     )
 
+    existing_profile = get_user_profile(st.session_state.user_id)
+    mbti_input = st.text_input(
+        "MBTI (optional)",
+        value=existing_profile.get("mbti", "")
+    )
+    priorities_input = st.text_area(
+        "Communication / value priorities (optional)",
+        value=existing_profile.get("priorities", "")
+    )
+
     st.subheader("Create a Room")
     if st.button("Create Room"):
-        if username_input.strip() == "":
+        username_value = (username_input or "").strip()
+        mbti_value = (mbti_input or "").strip()
+        priorities_value = (priorities_input or "").strip()
+
+        if username_value == "":
             st.error("Please enter a username first.")
         else:
-            ensure_user_created(username_input.strip())
+            ensure_user_created(
+                username_value,
+                mbti=mbti_value,
+                priorities=priorities_value
+            )
 
             code = generate_invite_code()
             room_id = create_room(code)
@@ -240,13 +267,22 @@ if st.session_state.room_id is None:
     input_code = st.text_input("Enter invite code")
 
     if st.button("Join Room"):
-        if username_input.strip() == "":
+        username_value = (username_input or "").strip()
+        input_code_value = (input_code or "").strip()
+        mbti_value = (mbti_input or "").strip()
+        priorities_value = (priorities_input or "").strip()
+
+        if username_value == "":
             st.error("Please enter a username first.")
         else:
-            room = get_room_by_code(input_code.strip())
+            room = get_room_by_code(input_code_value)
 
             if room:
-                ensure_user_created(username_input.strip())
+                ensure_user_created(
+                    username_value,
+                    mbti=mbti_value,
+                    priorities=priorities_value
+                )
 
                 room_id = room[0]
                 invite_code = room[1]
@@ -286,6 +322,48 @@ else:
     st.write("Your user ID:")
     st.code(st.session_state.user_id)
 
+    user_profile = get_user_profile(st.session_state.user_id)
+
+    with st.expander("Your Profile"):
+        with st.form("profile_form"):
+            profile_display_name = st.text_input(
+                "Display name",
+                value=user_profile.get("display_name") or st.session_state.username
+            )
+            profile_mbti = st.text_input(
+                "MBTI",
+                value=user_profile.get("mbti", "")
+            )
+            profile_priorities = st.text_area(
+                "Communication / value priorities",
+                value=user_profile.get("priorities", "")
+            )
+            profile_submitted = st.form_submit_button("Save Profile")
+
+            if profile_submitted:
+                profile_display_name_value = (profile_display_name or "").strip()
+                profile_mbti_value = (profile_mbti or "").strip()
+                profile_priorities_value = (profile_priorities or "").strip()
+
+                if profile_display_name_value == "":
+                    st.error("Display name cannot be empty.")
+                else:
+                    st.session_state.username = profile_display_name_value
+                    save_user_profile(
+                        st.session_state.user_id,
+                        display_name=profile_display_name_value,
+                        mbti=profile_mbti_value,
+                        priorities=profile_priorities_value
+                    )
+                    add_member(
+                        st.session_state.user_id,
+                        st.session_state.room_id,
+                        st.session_state.username
+                    )
+                    save_user_to_url()
+                    st.success("Profile saved.")
+                    st.rerun()
+
     st.subheader("Members in this room")
     members = get_members_by_room(st.session_state.room_id)
 
@@ -293,7 +371,7 @@ else:
         user_id = member[0]
         nickname = member[1]
 
-        if nickname and nickname.strip() != "":
+        if (nickname or "").strip() != "":
             st.write(f"Member {i}: {nickname}")
         else:
             st.write(f"Member {i}: {user_id}")
@@ -374,7 +452,14 @@ else:
             st.write("Your role: B")
         else:
             st.warning("Your role has not been assigned yet.")
-        turn_prompt = build_turn_coach_prompt(current_session, user_role)
+
+        recent_turn_history = get_turn_history(session_id)[-3:]
+        turn_prompt = build_turn_coach_prompt(
+            current_session,
+            user_role,
+            user_profile=user_profile,
+            recent_turn_history=recent_turn_history
+        )
 
         st.markdown("---")
         st.subheader("AI Coach Chat")
@@ -385,7 +470,7 @@ else:
             current_turn,
             st.session_state.user_id
         ):
-            if turn_prompt.strip():
+            if (turn_prompt or "").strip():
                 add_ai_message(
                     session_id=session_id,
                     turn_index=current_turn,
@@ -422,7 +507,9 @@ else:
             ai_submit = st.form_submit_button("Send to AI")
 
             if ai_submit:
-                if ai_input.strip() == "":
+                ai_input_value = (ai_input or "").strip()
+
+                if ai_input_value == "":
                     st.error("AI reply cannot be empty.")
                 else:
                     add_ai_message(
@@ -431,14 +518,16 @@ else:
                         user_id=st.session_state.user_id,
                         role_name=user_role,
                         sender="user",
-                        content=ai_input.strip()
+                        content=ai_input_value
                     )
 
                     ai_feedback = generate_dynamic_ai_feedback(
                         user_role=user_role,
-                        user_text=ai_input.strip(),
+                        user_text=ai_input_value,
                         current_turn=current_turn,
-                        current_situation=current_situation
+                        current_situation=current_situation,
+                        user_profile=user_profile,
+                        recent_turn_history=recent_turn_history
                     )
 
                     add_ai_message(
@@ -460,11 +549,13 @@ else:
             action_submit = st.form_submit_button("Submit Action and Advance Turn")
 
             if action_submit:
-                if action_input.strip() == "":
+                action_input_value = (action_input or "").strip()
+
+                if action_input_value == "":
                     st.error("Action cannot be empty.")
                 else:
                     validation = validate_turn_action(
-                        action_text=action_input.strip(),
+                        action_text=action_input_value,
                         current_session=current_session,
                         user_role=user_role
                     )
@@ -484,7 +575,7 @@ else:
                     next_situation = generate_next_situation(
                         current_session=current_session,
                         user_role=user_role,
-                        action_text=action_input.strip()
+                        action_text=action_input_value
                     )
 
                     advanced = complete_turn(
@@ -492,7 +583,7 @@ else:
                         expected_turn=current_turn,
                         acting_user_id=st.session_state.user_id,
                         role_name=user_role,
-                        submitted_action=action_input.strip(),
+                        submitted_action=action_input_value,
                         resulting_situation=next_situation
                     )
 
@@ -503,7 +594,7 @@ else:
                             user_id=st.session_state.user_id,
                             role_name=user_role,
                             sender="action",
-                            content=action_input.strip()
+                            content=action_input_value
                         )
                         st.success(f"Story advanced to turn {current_turn + 1}")
                         st.rerun()
@@ -524,7 +615,7 @@ else:
         msg_content = msg[2]
         msg_time = msg[3]
 
-        if msg_username and msg_username.strip() != "":
+        if (msg_username or "").strip() != "":
             st.write(f"**{msg_username}**: {msg_content}")
         else:
             st.write(f"**{msg_user_id}**: {msg_content}")
@@ -534,14 +625,16 @@ else:
         submitted = st.form_submit_button("Send Message")
 
         if submitted:
-            if new_message.strip() == "":
+            new_message_value = (new_message or "").strip()
+
+            if new_message_value == "":
                 st.error("Message cannot be empty.")
             else:
                 add_message(
                     st.session_state.room_id,
                     st.session_state.user_id,
                     st.session_state.username,
-                    new_message.strip()
+                    new_message_value
                 )
                 st.rerun()
 
