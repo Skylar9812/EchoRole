@@ -26,7 +26,7 @@ from database import (
     save_user_profile,
     add_message,
     get_messages_by_room,
-    create_session,
+    create_session_from_scenario,
     get_session_by_room,
     assign_role,
     get_user_role,
@@ -36,6 +36,11 @@ from database import (
     has_ai_prompt_for_turn,
     get_turn_history,
     complete_turn
+)
+from scenario_library import (
+    get_scenario_by_id,
+    get_scenario_categories,
+    get_scenarios_by_category,
 )
 
 init_db()
@@ -415,21 +420,6 @@ def generate_invite_code(length=6):
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
 
 
-def generate_demo_scenario():
-    return {
-        "title": "Team Deadline Conflict",
-        "context": "A product launch is approaching, and the team is under pressure.",
-        "conflict": "The manager thinks the team member is not responsive enough. The team member feels overloaded and unsupported.",
-        "role_a_brief": "You are the manager. You are worried the delay will affect the client relationship.",
-        "role_b_brief": "You are the team member. You believe expectations are unrealistic and communication has been one-sided.",
-        "opening_situation": (
-            "In a team check-in, the delayed launch timeline becomes impossible to ignore. "
-            "The manager raises concerns about responsiveness, while the team member feels cornered and unsupported. "
-            "Both people leave the exchange tense and uncertain about what should happen next."
-        )
-    }
-
-
 def ensure_user_created(username, mbti=None, priorities=None):
     """只有第一次才创建 user_id"""
     if st.session_state.user_id is None:
@@ -696,28 +686,50 @@ else:
     current_session = get_session_by_room(st.session_state.room_id)
 
     if current_session is None:
-        if st.button("Generate Demo Scenario"):
-            scenario = generate_demo_scenario()
+        scenario_categories = get_scenario_categories()
+        selected_category = st.selectbox(
+            "Scenario category",
+            options=scenario_categories,
+            key="scenario_category_selector"
+        )
 
-            session_id = create_session(
-                st.session_state.room_id,
-                scenario["title"],
-                scenario["context"],
-                scenario["conflict"],
-                scenario["role_a_brief"],
-                scenario["role_b_brief"],
-                scenario["opening_situation"]
-            )
+        category_scenarios = get_scenarios_by_category(selected_category)
+        scenario_options = {
+            scenario["title"]: scenario["id"]
+            for scenario in category_scenarios
+        }
+        selected_title = st.selectbox(
+            "Scenario title",
+            options=list(scenario_options.keys()),
+            key="scenario_title_selector"
+        )
 
-            members = get_members_by_room(st.session_state.room_id)
+        selected_scenario = get_scenario_by_id(scenario_options[selected_title])
 
-            if len(members) >= 1:
-                assign_role(session_id, members[0][0], "role_a")
+        if selected_scenario is not None:
+            st.caption(f"Category: {selected_scenario['category']}")
+            st.write("**Context:**", selected_scenario["context"])
+            st.write("**Conflict:**", selected_scenario["conflict"])
+            st.write("**Opening Situation:**", selected_scenario["opening_situation"])
 
-            if len(members) >= 2:
-                assign_role(session_id, members[1][0], "role_b")
+        if st.button("Create Scenario Session"):
+            if selected_scenario is None:
+                st.error("Please choose a scenario before creating a session.")
+            else:
+                session_id = create_session_from_scenario(
+                    st.session_state.room_id,
+                    selected_scenario
+                )
 
-            st.rerun()
+                members = get_members_by_room(st.session_state.room_id)
+
+                if len(members) >= 1:
+                    assign_role(session_id, members[0][0], "role_a")
+
+                if len(members) >= 2:
+                    assign_role(session_id, members[1][0], "role_b")
+
+                st.rerun()
 
     else:
         session_id = current_session["id"]
