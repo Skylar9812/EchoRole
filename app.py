@@ -1,12 +1,15 @@
 from streamlit_autorefresh import st_autorefresh
 import streamlit as st
+import os
 import uuid
 import random
 import string
+from datetime import datetime
 
 from ai_engine import (
     build_turn_coach_prompt,
     generate_dynamic_ai_feedback,
+    get_last_ai_debug_info,
     generate_next_situation,
     validate_turn_action
 )
@@ -37,6 +40,208 @@ from database import (
 
 init_db()
 
+_pending_ai_coach_state_updates = {}
+APP_RUNTIME_MARKER = "app_runtime_20260425_ai_reply_save_v3"
+
+
+def short_debug_preview(text, limit=140):
+    value = (text or "").strip()
+    if len(value) <= limit:
+        return value
+    return value[: limit - 3] + "..."
+
+
+def normalize_app_text(value):
+    if value is None:
+        return ""
+
+    if isinstance(value, bytes):
+        normalized = value.decode("utf-8", errors="replace")
+    else:
+        normalized = str(value)
+
+    normalized = normalized.replace("\x00", "")
+    return normalized
+
+
+def is_truthy_debug_flag(value):
+    if value is None:
+        return False
+
+    if isinstance(value, (list, tuple)):
+        if len(value) == 0:
+            return False
+        value = value[0]
+
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def should_show_ai_coach_debug():
+    return (
+        is_truthy_debug_flag(os.getenv("ECHOROLE_SHOW_AI_DEBUG"))
+        or is_truthy_debug_flag(st.query_params.get("debug"))
+    )
+
+
+def get_visible_ai_coach_debug(session_id, user_id, current_turn):
+    debug_snapshot = st.session_state.get("last_ai_coach_debug")
+    if not debug_snapshot:
+        return None
+
+    if debug_snapshot.get("session_id") != session_id:
+        return None
+
+    if debug_snapshot.get("user_id") != user_id:
+        return None
+
+    visible_snapshot = dict(debug_snapshot)
+    visible_snapshot["is_current_turn_snapshot"] = (
+        visible_snapshot.get("turn_index") == current_turn
+    )
+    return visible_snapshot
+
+
+def update_ai_coach_debug_snapshot(**kwargs):
+    current_snapshot = st.session_state.get("last_ai_coach_debug") or {}
+    submit_trace_id = (
+        kwargs.get("submit_trace_id")
+        or current_snapshot.get("submit_trace_id")
+    )
+    log_ai_submit_event(
+        "update_debug_snapshot_start",
+        submit_trace_id=submit_trace_id,
+        incoming_keys=sorted(kwargs.keys())
+    )
+    updated_snapshot = {
+        **current_snapshot,
+        **kwargs,
+    }
+    try:
+        st.session_state.last_ai_coach_debug = updated_snapshot
+        log_ai_submit_event(
+            "update_debug_snapshot_assigned",
+            submit_trace_id=submit_trace_id,
+            pipeline_stage=updated_snapshot.get("pipeline_stage"),
+            provider=updated_snapshot.get("provider"),
+            provider_stage=updated_snapshot.get("provider_stage")
+        )
+    except BaseException as exc:
+        log_ai_submit_event(
+            "update_debug_snapshot_exception",
+            submit_trace_id=submit_trace_id,
+            exception_type=type(exc).__name__,
+            pipeline_error=str(exc)
+        )
+        raise
+    return updated_snapshot
+
+
+def log_ai_submit_event(event, submit_trace_id=None, **fields):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    trace_label = submit_trace_id or "-"
+    field_parts = []
+    for key, value in fields.items():
+        if value is None:
+            continue
+        field_parts.append(f"{key}={value!r}")
+
+    suffix = ""
+    if field_parts:
+        suffix = " " + " ".join(field_parts)
+
+    print(
+        f"[EchoRole][AppSubmit][{timestamp}] trace={trace_label} event={event}{suffix}",
+        flush=True
+    )
+
+
+def add_ai_message_with_logging(
+    *,
+    branch_name,
+    session_id,
+    turn_index,
+    user_id,
+    role_name,
+    sender,
+    content,
+    submit_trace_id=None
+):
+    normalized_content = normalize_app_text(content)
+    log_ai_submit_event(
+        "before_add_ai_message_call",
+        submit_trace_id=submit_trace_id,
+        branch_name=branch_name,
+        session_id=session_id,
+        turn_index=turn_index,
+        user_id=user_id,
+        role_name=role_name,
+        sender=sender,
+        content_type=type(normalized_content).__name__,
+        content_length=len((normalized_content or "").strip())
+    )
+    try:
+        row_id = add_ai_message(
+            session_id=session_id,
+            turn_index=turn_index,
+            user_id=user_id,
+            role_name=role_name,
+            sender=sender,
+            content=normalized_content
+        )
+    except Exception as exc:
+        log_ai_submit_event(
+            "add_ai_message_call_exception",
+            submit_trace_id=submit_trace_id,
+            branch_name=branch_name,
+            exception_type=type(exc).__name__,
+            exception_message=str(exc)
+        )
+        raise
+
+    log_ai_submit_event(
+        "after_add_ai_message_call",
+        submit_trace_id=submit_trace_id,
+        branch_name=branch_name,
+        row_id=row_id
+    )
+    return row_id
+
+
+def mark_ai_coach_submit_started():
+    st.session_state.ai_coach_submit_in_progress = True
+
+
+def queue_ai_coach_state_update(user_id, payload):
+    if not user_id:
+        return
+
+    _pending_ai_coach_state_updates[user_id] = dict(payload)
+    log_ai_submit_event(
+        "queued_pending_ai_coach_state",
+        submit_trace_id=payload.get("submit_trace_id"),
+        pipeline_stage=payload.get("pipeline_stage"),
+        ai_reply_saved=payload.get("ai_reply_saved")
+    )
+
+
+def flush_pending_ai_coach_state_update():
+    user_id = st.session_state.get("user_id")
+    if not user_id:
+        return
+
+    pending_payload = _pending_ai_coach_state_updates.pop(user_id, None)
+    if not pending_payload:
+        return
+
+    log_ai_submit_event(
+        "flushing_pending_ai_coach_state",
+        submit_trace_id=pending_payload.get("submit_trace_id"),
+        pipeline_stage=pending_payload.get("pipeline_stage"),
+        ai_reply_saved=pending_payload.get("ai_reply_saved")
+    )
+    st.session_state.last_ai_coach_debug = dict(pending_payload)
+    st.session_state.ai_coach_submit_in_progress = False
+
 
 # ---------- 1. 初始化 session_state ----------
 if "user_id" not in st.session_state:
@@ -50,6 +255,19 @@ if "room_id" not in st.session_state:
 
 if "invite_code" not in st.session_state:
     st.session_state.invite_code = None
+
+if "last_ai_coach_debug" not in st.session_state:
+    st.session_state.last_ai_coach_debug = None
+
+if "ai_coach_submit_in_progress" not in st.session_state:
+    st.session_state.ai_coach_submit_in_progress = False
+
+flush_pending_ai_coach_state_update()
+log_ai_submit_event(
+    "app_script_loaded",
+    runtime_marker=APP_RUNTIME_MARKER,
+    app_file=__file__
+)
 
 
 # ---------- 2. 从 URL 恢复用户身份 ----------
@@ -309,8 +527,6 @@ if st.session_state.room_id is None:
 
 # ---------- 4. 房间页 ----------
 else:
-    st_autorefresh(interval=3000, key="room_refresh")
-
     st.success("You are in a room now!")
 
     st.write("Room code:")
@@ -471,7 +687,8 @@ else:
             st.session_state.user_id
         ):
             if (turn_prompt or "").strip():
-                add_ai_message(
+                add_ai_message_with_logging(
+                    branch_name="turn_prompt_autoinsert",
                     session_id=session_id,
                     turn_index=current_turn,
                     user_id=st.session_state.user_id,
@@ -486,6 +703,28 @@ else:
             turn_index=current_turn,
             user_id=st.session_state.user_id
         )
+
+        ai_coach_debug = get_visible_ai_coach_debug(
+            session_id=session_id,
+            user_id=st.session_state.user_id,
+            current_turn=current_turn
+        )
+        show_ai_coach_debug = should_show_ai_coach_debug()
+        if ai_coach_debug is not None:
+            ai_coach_debug = dict(ai_coach_debug)
+            if ai_coach_debug.get("is_current_turn_snapshot"):
+                ai_coach_debug["rendered_message_count"] = len(ai_messages)
+                ai_coach_debug["rendered_ai_message_count"] = sum(
+                    1 for msg in ai_messages if msg[0] == "ai"
+                )
+            st.session_state.last_ai_coach_debug = ai_coach_debug
+            log_ai_submit_event(
+                "rendering_ai_messages",
+                submit_trace_id=ai_coach_debug.get("submit_trace_id"),
+                rendered_message_count=ai_coach_debug.get("rendered_message_count"),
+                rendered_ai_message_count=ai_coach_debug.get("rendered_ai_message_count"),
+                pipeline_stage=ai_coach_debug.get("pipeline_stage")
+            )
 
         if len(ai_messages) == 0:
             st.caption("No AI messages yet.")
@@ -502,42 +741,477 @@ else:
                 else:
                     st.write(f"**You:** {content}")
 
+        if show_ai_coach_debug and ai_coach_debug is not None:
+            with st.expander("Coach Reply Debug", expanded=False):
+                st.caption(f"Submit stage: {ai_coach_debug.get('pipeline_stage', '(unknown)')}")
+                st.caption(f"Submit in progress: {st.session_state.ai_coach_submit_in_progress}")
+                st.caption(f"Submit trace id: {ai_coach_debug.get('submit_trace_id', '(unknown)')}")
+                st.caption(f"Debug snapshot turn: {ai_coach_debug.get('turn_index', '(unknown)')}")
+                st.caption(f"Provider path: {ai_coach_debug.get('provider', 'unknown')}")
+                st.caption(f"Provider stage: {ai_coach_debug.get('provider_stage', '(unknown)')}")
+                st.caption(f"DeepSeek call succeeded: {ai_coach_debug.get('llm_call_succeeded', False)}")
+                st.caption(f"HTTP status: {ai_coach_debug.get('llm_http_status', '(none)')}")
+                st.caption(f"HTTP timeout seconds: {ai_coach_debug.get('llm_timeout_seconds', '(unknown)')}")
+                st.caption(f"Reply extracted: {ai_coach_debug.get('reply_extracted', False)}")
+                st.caption(f"Response content type: {ai_coach_debug.get('content_type', '(unknown)')}")
+                st.caption(f"Fallback used: {ai_coach_debug.get('used_fallback', False)}")
+                st.caption(f"Fallback reason: {ai_coach_debug.get('fallback_reason', '') or '(none)'}")
+                st.caption(f"Saved to ai_messages: {ai_coach_debug.get('ai_reply_saved', False)}")
+                st.caption(f"Saved AI row id: {ai_coach_debug.get('ai_reply_message_id', '(none)')}")
+                st.caption(f"Messages loaded immediately after save: {ai_coach_debug.get('loaded_message_count_after_save', 0)}")
+                st.caption(f"AI messages loaded immediately after save: {ai_coach_debug.get('loaded_ai_message_count_after_save', 0)}")
+                st.caption(f"Rendered messages this turn: {ai_coach_debug.get('rendered_message_count', 0)}")
+                st.caption(f"Rendered AI messages this turn: {ai_coach_debug.get('rendered_ai_message_count', 0)}")
+                st.caption(f"Extracted reply length: {ai_coach_debug.get('reply_length', 0)}")
+                st.caption(f"Extracted reply preview: {ai_coach_debug.get('reply_preview', '') or '(empty)'}")
+                st.caption(f"Saved reply preview: {ai_coach_debug.get('saved_reply_preview', '') or '(empty)'}")
+                if ai_coach_debug.get("pipeline_error"):
+                    st.caption(f"Pipeline error: {ai_coach_debug.get('pipeline_error')}")
+
         with st.form("ai_chat_form", clear_on_submit=True):
             ai_input = st.text_area("Reply to AI")
-            ai_submit = st.form_submit_button("Send to AI")
+            ai_submit = st.form_submit_button(
+                "Send to AI",
+                on_click=mark_ai_coach_submit_started
+            )
 
             if ai_submit:
                 ai_input_value = (ai_input or "").strip()
 
                 if ai_input_value == "":
+                    st.session_state.ai_coach_submit_in_progress = False
                     st.error("AI reply cannot be empty.")
                 else:
-                    add_ai_message(
-                        session_id=session_id,
-                        turn_index=current_turn,
-                        user_id=st.session_state.user_id,
-                        role_name=user_role,
-                        sender="user",
-                        content=ai_input_value
-                    )
+                    submit_user_id = st.session_state.user_id
+                    submit_trace_id = str(uuid.uuid4())[:8]
+                    base_debug_snapshot = {
+                        "session_id": session_id,
+                        "turn_index": current_turn,
+                        "user_id": submit_user_id,
+                        "submit_trace_id": submit_trace_id,
+                        "provider": "pending",
+                        "provider_stage": "not_started",
+                        "llm_call_attempted": False,
+                        "llm_call_succeeded": False,
+                        "llm_http_status": None,
+                        "llm_timeout_seconds": None,
+                        "reply_extracted": False,
+                        "reply_length": 0,
+                        "reply_preview": "",
+                        "content_type": "pending",
+                        "used_fallback": False,
+                        "fallback_reason": "",
+                        "ai_reply_saved": False,
+                        "ai_reply_message_id": None,
+                        "saved_reply_preview": "",
+                        "saved_reply_length": 0,
+                        "loaded_message_count_after_save": 0,
+                        "loaded_ai_message_count_after_save": 0,
+                        "rendered_message_count": len(ai_messages),
+                        "rendered_ai_message_count": sum(
+                            1 for msg in ai_messages if msg[0] == "ai"
+                        ),
+                        "pipeline_stage": "submit_clicked",
+                        "pipeline_error": "",
+                        "submitted_reflection_preview": short_debug_preview(ai_input_value),
+                    }
+                    st.session_state.ai_coach_submit_in_progress = True
+                    st.session_state.last_ai_coach_debug = dict(base_debug_snapshot)
 
-                    ai_feedback = generate_dynamic_ai_feedback(
-                        user_role=user_role,
-                        user_text=ai_input_value,
-                        current_turn=current_turn,
-                        current_situation=current_situation,
-                        user_profile=user_profile,
-                        recent_turn_history=recent_turn_history
-                    )
+                    user_message_id = None
+                    ai_reply_message_id = None
+                    ai_feedback = ""
+                    engine_debug_info = {}
+                    post_return_debug_snapshot = None
 
-                    add_ai_message(
-                        session_id=session_id,
-                        turn_index=current_turn,
-                        user_id=st.session_state.user_id,
-                        role_name=user_role,
-                        sender="ai",
-                        content=ai_feedback
-                    )
+                    try:
+                        log_ai_submit_event(
+                            "saving_user_message",
+                            submit_trace_id=submit_trace_id,
+                            session_id=session_id,
+                            turn_index=current_turn
+                        )
+                        update_ai_coach_debug_snapshot(pipeline_stage="saving_user_message")
+                        user_message_id = add_ai_message(
+                            session_id=session_id,
+                            turn_index=current_turn,
+                            user_id=submit_user_id,
+                            role_name=user_role,
+                            sender="user",
+                            content=ai_input_value
+                        )
+                        log_ai_submit_event(
+                            "user_message_saved",
+                            submit_trace_id=submit_trace_id,
+                            user_message_id=user_message_id
+                        )
+                        update_ai_coach_debug_snapshot(
+                            pipeline_stage="user_message_saved",
+                            user_message_id=user_message_id
+                        )
+
+                        log_ai_submit_event(
+                            "calling_generate_dynamic_ai_feedback",
+                            submit_trace_id=submit_trace_id,
+                            reflection_length=len(ai_input_value)
+                        )
+                        update_ai_coach_debug_snapshot(
+                            pipeline_stage="calling_generate_dynamic_ai_feedback"
+                        )
+                        thinking_status = None
+                        try:
+                            log_ai_submit_event(
+                                "before_entering_spinner",
+                                submit_trace_id=submit_trace_id
+                            )
+                            thinking_status = st.empty()
+                            thinking_status.caption("AI Coach is thinking...")
+                            log_ai_submit_event(
+                                "after_entering_spinner",
+                                submit_trace_id=submit_trace_id
+                            )
+                            log_ai_submit_event(
+                                "before_generate_dynamic_ai_feedback_call",
+                                submit_trace_id=submit_trace_id
+                            )
+                            ai_feedback = generate_dynamic_ai_feedback(
+                                user_role=user_role,
+                                user_text=ai_input_value,
+                                current_turn=current_turn,
+                                current_situation=current_situation,
+                                user_profile=user_profile,
+                                recent_turn_history=recent_turn_history,
+                                debug_trace_id=submit_trace_id
+                            )
+                            log_ai_submit_event(
+                                "after_generate_dynamic_ai_feedback_call",
+                                submit_trace_id=submit_trace_id,
+                                reply_type=type(ai_feedback).__name__
+                            )
+                        except BaseException as exc:
+                            post_call_error = f"{type(exc).__name__}: {exc}"
+                            log_ai_submit_event(
+                                "ai_feedback_post_call_exception",
+                                submit_trace_id=submit_trace_id,
+                                exception_type=type(exc).__name__,
+                                exception_message=str(exc),
+                                boundary="generate_dynamic_ai_feedback"
+                            )
+                            queue_ai_coach_state_update(
+                                submit_user_id,
+                                {
+                                    **base_debug_snapshot,
+                                    "pipeline_stage": "ai_feedback_post_call_exception",
+                                    "pipeline_error": post_call_error,
+                                    "user_message_id": user_message_id,
+                                }
+                            )
+                            raise
+                        finally:
+                            if thinking_status is not None:
+                                try:
+                                    thinking_status.empty()
+                                except BaseException as exc:
+                                    log_ai_submit_event(
+                                        "ai_feedback_post_call_exception",
+                                        submit_trace_id=submit_trace_id,
+                                        exception_type=type(exc).__name__,
+                                        exception_message=str(exc),
+                                        boundary="thinking_status_cleanup"
+                                    )
+                                    if (ai_feedback or "").strip() == "":
+                                        queue_ai_coach_state_update(
+                                            submit_user_id,
+                                            {
+                                                **base_debug_snapshot,
+                                                "pipeline_stage": "ai_feedback_post_call_exception",
+                                                "pipeline_error": f"{type(exc).__name__}: {exc}",
+                                                "user_message_id": user_message_id,
+                                            }
+                                        )
+                                        raise
+                        log_ai_submit_event(
+                            "before_ai_feedback_returned_log",
+                            submit_trace_id=submit_trace_id
+                        )
+                        ai_feedback = normalize_app_text(ai_feedback)
+                        log_ai_submit_event(
+                            "ai_feedback_returned",
+                            submit_trace_id=submit_trace_id,
+                            reply_length=len((ai_feedback or "").strip()),
+                            reply_type=type(ai_feedback).__name__
+                        )
+                        post_return_debug_snapshot = {
+                            **base_debug_snapshot,
+                            "pipeline_stage": "ai_feedback_returned",
+                            "user_message_id": user_message_id,
+                            "saved_reply_preview": short_debug_preview(ai_feedback),
+                            "saved_reply_length": len((ai_feedback or "").strip()),
+                        }
+                        log_ai_submit_event(
+                            "post_return_debug_buffered",
+                            submit_trace_id=submit_trace_id,
+                            reply_length=post_return_debug_snapshot["saved_reply_length"]
+                        )
+
+                        log_ai_submit_event(
+                            "capturing_engine_debug",
+                            submit_trace_id=submit_trace_id
+                        )
+                        engine_debug_info = get_last_ai_debug_info()
+                        log_ai_submit_event(
+                            "engine_debug_captured",
+                            submit_trace_id=submit_trace_id,
+                            engine_provider=engine_debug_info.get("provider"),
+                            engine_provider_stage=engine_debug_info.get("provider_stage"),
+                            engine_reply_length=engine_debug_info.get("reply_length")
+                        )
+                        post_return_debug_snapshot.update(engine_debug_info)
+                        post_return_debug_snapshot.update({
+                            "pipeline_stage": "updating_debug_snapshot",
+                            "saved_reply_preview": short_debug_preview(ai_feedback),
+                            "saved_reply_length": len((ai_feedback or "").strip()),
+                        })
+                        log_ai_submit_event(
+                            "debug_snapshot_updated",
+                            submit_trace_id=submit_trace_id,
+                            provider=post_return_debug_snapshot.get("provider"),
+                            provider_stage=post_return_debug_snapshot.get("provider_stage")
+                        )
+
+                        log_ai_submit_event(
+                            "saving_ai_reply",
+                            submit_trace_id=submit_trace_id
+                        )
+                        log_ai_submit_event(
+                            "after_saving_ai_reply_marker",
+                            submit_trace_id=submit_trace_id
+                        )
+                        try:
+                            post_return_debug_snapshot["pipeline_stage"] = "saving_ai_reply"
+                            log_ai_submit_event(
+                                "after_setting_saving_ai_reply_stage",
+                                submit_trace_id=submit_trace_id,
+                                pipeline_stage=post_return_debug_snapshot.get("pipeline_stage")
+                            )
+                            log_ai_submit_event(
+                                "before_coach_reply_save_branch_context",
+                                submit_trace_id=submit_trace_id
+                            )
+                            coach_reply_save_branch_name = "coach_reply_save_v3"
+                            log_ai_submit_event(
+                                "after_coach_reply_save_branch_name",
+                                submit_trace_id=submit_trace_id,
+                                branch_name=coach_reply_save_branch_name
+                            )
+                            coach_reply_save_branch_context = {}
+
+                            def assign_coach_reply_context_field(field_name, value_factory):
+                                log_ai_submit_event(
+                                    f"context_field_{field_name}",
+                                    submit_trace_id=submit_trace_id
+                                )
+                                try:
+                                    field_value = value_factory()
+                                    coach_reply_save_branch_context[field_name] = field_value
+                                    return field_value
+                                except BaseException as exc:
+                                    field_error = f"{type(exc).__name__}: {exc}"
+                                    if isinstance(post_return_debug_snapshot, dict):
+                                        post_return_debug_snapshot.update({
+                                            "pipeline_stage": "coach_reply_branch_context_field_exception",
+                                            "pipeline_error": f"{field_name}: {field_error}",
+                                            "saved_reply_preview": short_debug_preview(ai_feedback),
+                                            "saved_reply_length": len((ai_feedback or "").strip()),
+                                            "context_field_name": field_name,
+                                        })
+                                        queue_ai_coach_state_update(
+                                            submit_user_id,
+                                            post_return_debug_snapshot
+                                        )
+                                    log_ai_submit_event(
+                                        "coach_reply_branch_context_field_exception",
+                                        submit_trace_id=submit_trace_id,
+                                        field_name=field_name,
+                                        exception_type=type(exc).__name__,
+                                        exception_message=str(exc)
+                                    )
+                                    raise
+
+                            assign_coach_reply_context_field(
+                                "runtime_marker",
+                                lambda: APP_RUNTIME_MARKER
+                            )
+                            assign_coach_reply_context_field(
+                                "branch_name",
+                                lambda: coach_reply_save_branch_name
+                            )
+                            assign_coach_reply_context_field(
+                                "session_id",
+                                lambda: session_id
+                            )
+                            assign_coach_reply_context_field(
+                                "turn_index",
+                                lambda: current_turn
+                            )
+                            assign_coach_reply_context_field(
+                                "user_id",
+                                lambda: submit_user_id
+                            )
+                            assign_coach_reply_context_field(
+                                "role_name",
+                                lambda: user_role
+                            )
+                            assign_coach_reply_context_field(
+                                "sender",
+                                lambda: "ai"
+                            )
+                            assign_coach_reply_context_field(
+                                "ai_feedback_type",
+                                lambda: type(ai_feedback).__name__
+                            )
+                            assign_coach_reply_context_field(
+                                "ai_feedback_length",
+                                lambda: len((ai_feedback or "").strip())
+                            )
+                            log_ai_submit_event(
+                                "after_coach_reply_save_branch_context",
+                                submit_trace_id=submit_trace_id,
+                                branch_name=coach_reply_save_branch_context.get("branch_name"),
+                                context_user_id=coach_reply_save_branch_context.get("user_id"),
+                                ai_feedback_length=coach_reply_save_branch_context.get("ai_feedback_length")
+                            )
+                            log_ai_submit_event(
+                                "before_active_ai_reply_save_branch_entered",
+                                submit_trace_id=submit_trace_id,
+                                branch_name=coach_reply_save_branch_name
+                            )
+                        except Exception as exc:
+                            pre_save_boundary_error = f"{type(exc).__name__}: {exc}"
+                            if isinstance(post_return_debug_snapshot, dict):
+                                post_return_debug_snapshot.update({
+                                    "pipeline_stage": "coach_reply_branch_context_exception",
+                                    "pipeline_error": pre_save_boundary_error,
+                                    "saved_reply_preview": short_debug_preview(ai_feedback),
+                                    "saved_reply_length": len((ai_feedback or "").strip()),
+                                })
+                            log_ai_submit_event(
+                                "coach_reply_branch_context_exception",
+                                submit_trace_id=submit_trace_id,
+                                exception_type=type(exc).__name__,
+                                exception_message=str(exc)
+                            )
+                            raise
+                        log_ai_submit_event(
+                            "active_ai_reply_save_branch_entered",
+                            submit_trace_id=submit_trace_id,
+                            **coach_reply_save_branch_context
+                        )
+                        try:
+                            ai_reply_message_id = add_ai_message_with_logging(
+                                branch_name="coach_reply_save_v3",
+                                session_id=session_id,
+                                turn_index=current_turn,
+                                user_id=submit_user_id,
+                                role_name=user_role,
+                                sender="ai",
+                                content=ai_feedback
+                            )
+                        except Exception as exc:
+                            add_ai_message_error = f"{type(exc).__name__}: {exc}"
+                            post_return_debug_snapshot.update({
+                                "pipeline_stage": "add_ai_message_call_exception",
+                                "pipeline_error": add_ai_message_error,
+                                "saved_reply_preview": short_debug_preview(ai_feedback),
+                                "saved_reply_length": len((ai_feedback or "").strip()),
+                            })
+                            log_ai_submit_event(
+                                "add_ai_message_call_exception",
+                                submit_trace_id=submit_trace_id,
+                                exception_type=type(exc).__name__,
+                                exception_message=str(exc)
+                            )
+                            raise
+                        log_ai_submit_event(
+                            "ai_reply_saved",
+                            submit_trace_id=submit_trace_id,
+                            ai_reply_message_id=ai_reply_message_id
+                        )
+                        post_return_debug_snapshot.update({
+                            "pipeline_stage": "ai_reply_saved",
+                            "ai_reply_message_id": ai_reply_message_id,
+                            "ai_reply_saved": ai_reply_message_id is not None,
+                        })
+
+                        log_ai_submit_event(
+                            "reloading_ai_messages",
+                            submit_trace_id=submit_trace_id
+                        )
+                        post_return_debug_snapshot["pipeline_stage"] = "reloading_ai_messages"
+                        saved_ai_messages = get_ai_messages(
+                            session_id=session_id,
+                            turn_index=current_turn,
+                            user_id=submit_user_id
+                        )
+                        loaded_ai_message_count = sum(
+                            1 for msg in saved_ai_messages if msg[0] == "ai"
+                        )
+                        log_ai_submit_event(
+                            "ai_messages_reloaded",
+                            submit_trace_id=submit_trace_id,
+                            loaded_message_count=len(saved_ai_messages),
+                            loaded_ai_message_count=loaded_ai_message_count
+                        )
+                        post_return_debug_snapshot.update({
+                            "pipeline_stage": "ai_messages_reloaded",
+                            "user_message_id": user_message_id,
+                            "ai_reply_message_id": ai_reply_message_id,
+                            "ai_reply_saved": ai_reply_message_id is not None,
+                            "saved_reply_preview": short_debug_preview(ai_feedback),
+                            "saved_reply_length": len((ai_feedback or "").strip()),
+                            "loaded_message_count_after_save": len(saved_ai_messages),
+                            "loaded_ai_message_count_after_save": loaded_ai_message_count,
+                        })
+
+                        log_ai_submit_event(
+                            "completed",
+                            submit_trace_id=submit_trace_id,
+                            ai_reply_saved=ai_reply_message_id is not None
+                        )
+                        post_return_debug_snapshot["pipeline_stage"] = "completed"
+                        queue_ai_coach_state_update(
+                            submit_user_id,
+                            post_return_debug_snapshot
+                        )
+                    except Exception as exc:
+                        exception_message = f"{type(exc).__name__}: {exc}"
+                        exception_stage = (
+                            (post_return_debug_snapshot or {}).get("pipeline_stage")
+                            or "exception"
+                        )
+                        log_ai_submit_event(
+                            "exception",
+                            submit_trace_id=submit_trace_id,
+                            pipeline_error=exception_message,
+                            user_message_id=user_message_id,
+                            ai_reply_message_id=ai_reply_message_id,
+                            pipeline_stage=exception_stage
+                        )
+                        exception_snapshot = {
+                            **(post_return_debug_snapshot or base_debug_snapshot),
+                            **engine_debug_info,
+                            "user_message_id": user_message_id,
+                            "ai_reply_message_id": ai_reply_message_id,
+                            "ai_reply_saved": False,
+                            "saved_reply_preview": short_debug_preview(ai_feedback),
+                            "saved_reply_length": len((ai_feedback or "").strip()),
+                            "pipeline_stage": exception_stage,
+                            "pipeline_error": exception_message,
+                        }
+                        queue_ai_coach_state_update(
+                            submit_user_id,
+                            exception_snapshot
+                        )
 
                     st.rerun()
 
@@ -561,7 +1235,8 @@ else:
                     )
 
                     if not validation["is_valid"]:
-                        add_ai_message(
+                        add_ai_message_with_logging(
+                            branch_name="validation_feedback_save",
                             session_id=session_id,
                             turn_index=current_turn,
                             user_id=st.session_state.user_id,
@@ -647,7 +1322,12 @@ else:
                 st.session_state.user_id,
                 st.session_state.room_id
             )
+        st.session_state.ai_coach_submit_in_progress = False
+        st.session_state.last_ai_coach_debug = None
         st.session_state.room_id = None
         st.session_state.invite_code = None
         clear_url()
         st.rerun()
+
+    if not st.session_state.ai_coach_submit_in_progress:
+        st_autorefresh(interval=3000, key="room_refresh")

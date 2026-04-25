@@ -1,18 +1,46 @@
 import sqlite3
 import json
+from datetime import datetime
 
 DB_NAME = "echorole.db"
+SQLITE_TIMEOUT_SECONDS = 8.0
+SQLITE_BUSY_TIMEOUT_MS = int(SQLITE_TIMEOUT_SECONDS * 1000)
+
+
+def log_database_event(event, **fields):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    field_parts = []
+    for key, value in fields.items():
+        if value is None:
+            continue
+        field_parts.append(f"{key}={value!r}")
+
+    suffix = ""
+    if field_parts:
+        suffix = " " + " ".join(field_parts)
+
+    print(
+        f"[EchoRole][Database][{timestamp}] event={event}{suffix}",
+        flush=True
+    )
 
 
 def get_connection():
-    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+    conn = sqlite3.connect(
+        DB_NAME,
+        check_same_thread=False,
+        timeout=SQLITE_TIMEOUT_SECONDS
+    )
     conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+    conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
 def init_db():
     conn = get_connection()
     cursor = conn.cursor()
+    cursor.execute("PRAGMA journal_mode = WAL")
 
     # rooms
     cursor.execute("""
@@ -662,21 +690,130 @@ def get_progression_history(session_id):
 
 
 def add_ai_message(session_id, turn_index, user_id, role_name, sender, content):
+    is_ai_reply = sender == "ai"
+    content_length = len(content or "")
+
+    if is_ai_reply:
+        log_database_event(
+            "add_ai_message_enter",
+            session_id=session_id,
+            turn_index=turn_index,
+            user_id=user_id,
+            role_name=role_name,
+            sender=sender,
+            content_length=content_length
+        )
+
     conn = get_connection()
     cursor = conn.cursor()
 
-    cursor.execute(
-        """
-        INSERT INTO ai_messages (
-            session_id, stage_index, user_id, role_name, sender, content
-        )
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (session_id, turn_index, user_id, role_name, sender, content)
-    )
+    try:
+        if is_ai_reply:
+            log_database_event(
+                "add_ai_message_before_insert",
+                session_id=session_id,
+                turn_index=turn_index,
+                user_id=user_id,
+                content_length=content_length
+            )
 
-    conn.commit()
-    conn.close()
+        cursor.execute(
+            """
+            INSERT INTO ai_messages (
+                session_id, stage_index, user_id, role_name, sender, content
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (session_id, turn_index, user_id, role_name, sender, content)
+        )
+
+        row_id = cursor.lastrowid
+
+        if is_ai_reply:
+            log_database_event(
+                "add_ai_message_after_insert",
+                session_id=session_id,
+                turn_index=turn_index,
+                user_id=user_id,
+                row_id=row_id
+            )
+            log_database_event(
+                "add_ai_message_before_commit",
+                session_id=session_id,
+                turn_index=turn_index,
+                user_id=user_id,
+                row_id=row_id
+            )
+
+        conn.commit()
+
+        if is_ai_reply:
+            log_database_event(
+                "add_ai_message_after_commit",
+                session_id=session_id,
+                turn_index=turn_index,
+                user_id=user_id,
+                row_id=row_id
+            )
+
+        return row_id
+    except sqlite3.Error as exc:
+        try:
+            conn.rollback()
+            if is_ai_reply:
+                log_database_event(
+                    "add_ai_message_rollback_completed",
+                    session_id=session_id,
+                    turn_index=turn_index,
+                    user_id=user_id,
+                    exception_type=type(exc).__name__
+                )
+        except sqlite3.Error as rollback_exc:
+            if is_ai_reply:
+                log_database_event(
+                    "add_ai_message_rollback_failed",
+                    session_id=session_id,
+                    turn_index=turn_index,
+                    user_id=user_id,
+                    rollback_exception_type=type(rollback_exc).__name__,
+                    rollback_error=str(rollback_exc)
+                )
+
+        if is_ai_reply:
+            log_database_event(
+                "add_ai_message_sqlite_exception",
+                session_id=session_id,
+                turn_index=turn_index,
+                user_id=user_id,
+                exception_type=type(exc).__name__,
+                error=str(exc)
+            )
+        raise
+    except BaseException as exc:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+
+        if is_ai_reply:
+            log_database_event(
+                "add_ai_message_exception",
+                session_id=session_id,
+                turn_index=turn_index,
+                user_id=user_id,
+                exception_type=type(exc).__name__,
+                error=str(exc)
+            )
+        raise
+    finally:
+        conn.close()
+        if is_ai_reply:
+            log_database_event(
+                "add_ai_message_connection_closed",
+                session_id=session_id,
+                turn_index=turn_index,
+                user_id=user_id
+            )
 
 
 def get_ai_messages(session_id, turn_index, user_id):
