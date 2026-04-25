@@ -83,6 +83,81 @@ def should_show_ai_coach_debug():
     )
 
 
+def render_ai_coach_messages(message_container, ai_messages, submit_trace_id=None):
+    should_log_render_details = (
+        submit_trace_id is not None
+        or should_show_ai_coach_debug()
+    )
+
+    def log_render_event(event, **fields):
+        if should_log_render_details:
+            log_ai_submit_event(
+                event,
+                submit_trace_id=submit_trace_id,
+                **fields
+            )
+
+    log_render_event(
+        "render_ai_coach_messages_entered",
+        message_count=len(ai_messages)
+    )
+    log_render_event(
+        "render_ai_coach_messages_container_type",
+        container_type=type(message_container).__name__
+    )
+
+    try:
+        log_render_event("render_ai_coach_messages_before_container_context")
+        with message_container.container():
+            if len(ai_messages) == 0:
+                log_render_event(
+                    "render_ai_coach_messages_before_loop",
+                    message_count=0
+                )
+                st.caption("No AI messages yet.")
+                log_render_event(
+                    "render_ai_coach_messages_after_loop",
+                    rendered_message_count=0
+                )
+            else:
+                log_render_event(
+                    "render_ai_coach_messages_before_loop",
+                    message_count=len(ai_messages)
+                )
+                for index, msg in enumerate(ai_messages):
+                    sender = msg[0]
+                    content = msg[1]
+                    created_at = msg[2]
+                    log_render_event(
+                        "render_ai_coach_messages_each_message",
+                        index=index,
+                        sender=sender,
+                        content_preview=short_debug_preview(content, 80)
+                    )
+
+                    if sender == "ai":
+                        st.info(f"AI: {content}")
+                    elif sender == "action":
+                        st.caption(f"Your submitted action: {content}")
+                    else:
+                        st.write(f"**You:** {content}")
+
+                log_render_event(
+                    "render_ai_coach_messages_after_loop",
+                    rendered_message_count=len(ai_messages)
+                )
+        log_render_event("render_ai_coach_messages_after_container_context")
+    except Exception as exc:
+        log_render_event(
+            "render_ai_coach_messages_exception",
+            exception_type=type(exc).__name__,
+            exception_message=str(exc)
+        )
+        raise
+
+    log_render_event("render_ai_coach_messages_exited")
+
+
 def get_visible_ai_coach_debug(session_id, user_id, current_turn):
     debug_snapshot = st.session_state.get("last_ai_coach_debug")
     if not debug_snapshot:
@@ -209,6 +284,8 @@ def add_ai_message_with_logging(
 
 def mark_ai_coach_submit_started():
     st.session_state.ai_coach_submit_in_progress = True
+    st.session_state.ai_coach_force_reload = False
+    st.session_state.ai_coach_force_reload_context = None
 
 
 def queue_ai_coach_state_update(user_id, payload):
@@ -240,7 +317,6 @@ def flush_pending_ai_coach_state_update():
         ai_reply_saved=pending_payload.get("ai_reply_saved")
     )
     st.session_state.last_ai_coach_debug = dict(pending_payload)
-    st.session_state.ai_coach_submit_in_progress = False
 
 
 # ---------- 1. 初始化 session_state ----------
@@ -262,12 +338,34 @@ if "last_ai_coach_debug" not in st.session_state:
 if "ai_coach_submit_in_progress" not in st.session_state:
     st.session_state.ai_coach_submit_in_progress = False
 
+if "ai_coach_force_reload" not in st.session_state:
+    st.session_state.ai_coach_force_reload = False
+
+if "ai_coach_force_reload_context" not in st.session_state:
+    st.session_state.ai_coach_force_reload_context = None
+
+show_ai_coach_debug = should_show_ai_coach_debug()
+if (
+    show_ai_coach_debug
+    or st.session_state.get("ai_coach_force_reload") is True
+    or st.session_state.get("ai_coach_submit_in_progress") is True
+):
+    log_ai_submit_event(
+        "ai_coach_force_reload_on_script_start",
+        force_reload_value=st.session_state.get("ai_coach_force_reload"),
+        force_reload_type=type(st.session_state.get("ai_coach_force_reload")).__name__,
+        force_reload_context_value=st.session_state.get("ai_coach_force_reload_context"),
+        force_reload_context_type=type(st.session_state.get("ai_coach_force_reload_context")).__name__,
+        ai_coach_submit_in_progress=st.session_state.get("ai_coach_submit_in_progress")
+    )
+
 flush_pending_ai_coach_state_update()
-log_ai_submit_event(
-    "app_script_loaded",
-    runtime_marker=APP_RUNTIME_MARKER,
-    app_file=__file__
-)
+if show_ai_coach_debug:
+    log_ai_submit_event(
+        "app_script_loaded",
+        runtime_marker=APP_RUNTIME_MARKER,
+        app_file=__file__
+    )
 
 
 # ---------- 2. 从 URL 恢复用户身份 ----------
@@ -703,6 +801,19 @@ else:
             turn_index=current_turn,
             user_id=st.session_state.user_id
         )
+        ai_messages_container = st.empty()
+        pending_submit_trace_id = (
+            (st.session_state.get("last_ai_coach_debug") or {}).get("submit_trace_id")
+        )
+        if st.session_state.ai_coach_submit_in_progress:
+            log_ai_submit_event(
+                "ai_messages_reloaded_for_top_level_render",
+                submit_trace_id=pending_submit_trace_id,
+                loaded_message_count=len(ai_messages),
+                loaded_ai_message_count=sum(
+                    1 for msg in ai_messages if msg[0] == "ai"
+                )
+            )
 
         ai_coach_debug = get_visible_ai_coach_debug(
             session_id=session_id,
@@ -726,20 +837,31 @@ else:
                 pipeline_stage=ai_coach_debug.get("pipeline_stage")
             )
 
-        if len(ai_messages) == 0:
-            st.caption("No AI messages yet.")
-        else:
-            for msg in ai_messages:
-                sender = msg[0]
-                content = msg[1]
-                created_at = msg[2]
-
-                if sender == "ai":
-                    st.info(f"AI: {content}")
-                elif sender == "action":
-                    st.caption(f"Your submitted action: {content}")
-                else:
-                    st.write(f"**You:** {content}")
+        render_ai_coach_messages(
+            ai_messages_container,
+            ai_messages,
+            submit_trace_id=(
+                pending_submit_trace_id
+                if st.session_state.ai_coach_submit_in_progress
+                else None
+            )
+        )
+        if st.session_state.ai_coach_submit_in_progress:
+            log_ai_submit_event(
+                "ai_messages_rendered_from_db",
+                submit_trace_id=pending_submit_trace_id,
+                rendered_message_count=len(ai_messages),
+                rendered_ai_message_count=sum(
+                    1 for msg in ai_messages if msg[0] == "ai"
+                )
+            )
+            if len(ai_messages) > 0 and ai_messages[-1][0] == "ai":
+                st.session_state.ai_coach_submit_in_progress = False
+                log_ai_submit_event(
+                    "ai_coach_submit_in_progress_cleared_on_clean_render",
+                    submit_trace_id=pending_submit_trace_id,
+                    latest_sender=ai_messages[-1][0]
+                )
 
         if show_ai_coach_debug and ai_coach_debug is not None:
             with st.expander("Coach Reply Debug", expanded=False):
@@ -784,6 +906,13 @@ else:
                 else:
                     submit_user_id = st.session_state.user_id
                     submit_trace_id = str(uuid.uuid4())[:8]
+                    log_ai_submit_event(
+                        "ai_coach_submit_started",
+                        submit_trace_id=submit_trace_id,
+                        session_id=session_id,
+                        turn_index=current_turn,
+                        user_id=submit_user_id
+                    )
                     base_debug_snapshot = {
                         "session_id": session_id,
                         "turn_index": current_turn,
@@ -816,6 +945,8 @@ else:
                         "submitted_reflection_preview": short_debug_preview(ai_input_value),
                     }
                     st.session_state.ai_coach_submit_in_progress = True
+                    st.session_state.ai_coach_force_reload = False
+                    st.session_state.ai_coach_force_reload_context = None
                     st.session_state.last_ai_coach_debug = dict(base_debug_snapshot)
 
                     user_message_id = None
@@ -907,29 +1038,6 @@ else:
                                 }
                             )
                             raise
-                        finally:
-                            if thinking_status is not None:
-                                try:
-                                    thinking_status.empty()
-                                except BaseException as exc:
-                                    log_ai_submit_event(
-                                        "ai_feedback_post_call_exception",
-                                        submit_trace_id=submit_trace_id,
-                                        exception_type=type(exc).__name__,
-                                        exception_message=str(exc),
-                                        boundary="thinking_status_cleanup"
-                                    )
-                                    if (ai_feedback or "").strip() == "":
-                                        queue_ai_coach_state_update(
-                                            submit_user_id,
-                                            {
-                                                **base_debug_snapshot,
-                                                "pipeline_stage": "ai_feedback_post_call_exception",
-                                                "pipeline_error": f"{type(exc).__name__}: {exc}",
-                                                "user_message_id": user_message_id,
-                                            }
-                                        )
-                                        raise
                         log_ai_submit_event(
                             "before_ai_feedback_returned_log",
                             submit_trace_id=submit_trace_id
@@ -1172,17 +1280,11 @@ else:
                             "loaded_message_count_after_save": len(saved_ai_messages),
                             "loaded_ai_message_count_after_save": loaded_ai_message_count,
                         })
-
                         log_ai_submit_event(
-                            "completed",
-                            submit_trace_id=submit_trace_id,
-                            ai_reply_saved=ai_reply_message_id is not None
+                            "ai_coach_post_save_rerun_called",
+                            submit_trace_id=submit_trace_id
                         )
-                        post_return_debug_snapshot["pipeline_stage"] = "completed"
-                        queue_ai_coach_state_update(
-                            submit_user_id,
-                            post_return_debug_snapshot
-                        )
+                        st.rerun()
                     except Exception as exc:
                         exception_message = f"{type(exc).__name__}: {exc}"
                         exception_stage = (
@@ -1212,8 +1314,7 @@ else:
                             submit_user_id,
                             exception_snapshot
                         )
-
-                    st.rerun()
+                        st.session_state.ai_coach_submit_in_progress = False
 
         st.subheader("Submit Turn Action")
         st.caption("Use one concrete action to push the shared story into the next turn.")
@@ -1323,6 +1424,8 @@ else:
                 st.session_state.room_id
             )
         st.session_state.ai_coach_submit_in_progress = False
+        st.session_state.ai_coach_force_reload = False
+        st.session_state.ai_coach_force_reload_context = None
         st.session_state.last_ai_coach_debug = None
         st.session_state.room_id = None
         st.session_state.invite_code = None
@@ -1331,3 +1434,9 @@ else:
 
     if not st.session_state.ai_coach_submit_in_progress:
         st_autorefresh(interval=3000, key="room_refresh")
+    else:
+        log_ai_submit_event(
+            "polling_disabled_for_ai_coach_submit",
+            submit_trace_id=(st.session_state.get("last_ai_coach_debug") or {}).get("submit_trace_id"),
+            pipeline_stage=(st.session_state.get("last_ai_coach_debug") or {}).get("pipeline_stage")
+        )
