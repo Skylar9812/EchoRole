@@ -9,9 +9,9 @@ from datetime import datetime
 from ai_engine import (
     build_turn_coach_prompt,
     generate_dynamic_ai_feedback,
-    get_last_ai_debug_info,
     generate_next_situation,
-    validate_turn_action
+    get_last_ai_debug_info,
+    validate_turn_action,
 )
 
 from database import (
@@ -231,6 +231,25 @@ def log_ai_submit_event(event, submit_trace_id=None, **fields):
 
     print(
         f"[EchoRole][AppSubmit][{timestamp}] trace={trace_label} event={event}{suffix}",
+        flush=True
+    )
+
+
+def log_turn_action_event(event, submit_trace_id=None, **fields):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    trace_label = submit_trace_id or "-"
+    field_parts = []
+    for key, value in fields.items():
+        if value is None:
+            continue
+        field_parts.append(f"{key}={value!r}")
+
+    suffix = ""
+    if field_parts:
+        suffix = " " + " ".join(field_parts)
+
+    print(
+        f"[EchoRole][TurnAction][{timestamp}] trace={trace_label} event={event}{suffix}",
         flush=True
     )
 
@@ -1336,11 +1355,31 @@ else:
             action_submit = st.form_submit_button("Submit Action and Advance Turn")
 
             if action_submit:
+                turn_action_trace_id = str(uuid.uuid4())[:8]
                 action_input_value = (action_input or "").strip()
+                submit_user_id = st.session_state.user_id
+                submit_room_id = st.session_state.room_id
+                log_turn_action_event(
+                    "submit_turn_action_started",
+                    submit_trace_id=turn_action_trace_id,
+                    session_id=session_id,
+                    turn_index=current_turn,
+                    user_id=submit_user_id,
+                    role_name=user_role,
+                    action_length=len(action_input_value)
+                )
 
                 if action_input_value == "":
                     st.error("Action cannot be empty.")
                 else:
+                    recent_turn_history = get_turn_history(session_id)[-3:]
+                    log_turn_action_event(
+                        "submit_turn_action_local_validation_started",
+                        submit_trace_id=turn_action_trace_id,
+                        session_id=session_id,
+                        turn_index=current_turn,
+                        history_count=len(recent_turn_history)
+                    )
                     validation = validate_turn_action(
                         action_text=action_input_value,
                         current_session=current_session,
@@ -1348,46 +1387,192 @@ else:
                     )
 
                     if not validation["is_valid"]:
-                        add_ai_message_with_logging(
-                            branch_name="validation_feedback_save",
-                            session_id=session_id,
-                            turn_index=current_turn,
-                            user_id=st.session_state.user_id,
-                            role_name=user_role,
-                            sender="ai",
-                            content=validation["feedback"]
+                        feedback_message = normalize_app_text(validation.get("feedback"))
+                        log_turn_action_event(
+                            "submit_turn_action_local_validation_rejected",
+                            submit_trace_id=turn_action_trace_id,
+                            reason=short_debug_preview(feedback_message)
                         )
-                        st.warning("Revise the action before advancing the turn.")
-                        st.rerun()
-
-                    next_situation = generate_next_situation(
-                        current_session=current_session,
-                        user_role=user_role,
-                        action_text=action_input_value
-                    )
-
-                    advanced = complete_turn(
-                        session_id=session_id,
-                        expected_turn=current_turn,
-                        acting_user_id=st.session_state.user_id,
-                        role_name=user_role,
-                        submitted_action=action_input_value,
-                        resulting_situation=next_situation
-                    )
-
-                    if advanced:
-                        add_ai_message(
-                            session_id=session_id,
-                            turn_index=current_turn,
-                            user_id=st.session_state.user_id,
-                            role_name=user_role,
-                            sender="action",
-                            content=action_input_value
+                        if feedback_message:
+                            add_ai_message_with_logging(
+                                branch_name="validation_feedback_save",
+                                session_id=session_id,
+                                turn_index=current_turn,
+                                user_id=submit_user_id,
+                                role_name=user_role,
+                                sender="ai",
+                                content=feedback_message,
+                                submit_trace_id=turn_action_trace_id
+                            )
+                        st.warning(
+                            feedback_message
+                            or "Your action needs to be more concrete before the scenario can advance."
                         )
-                        st.success(f"Story advanced to turn {current_turn + 1}")
-                        st.rerun()
                     else:
-                        st.warning("This turn was already advanced elsewhere. Reload to see the latest situation.")
+                        log_turn_action_event(
+                            "submit_turn_action_local_validation_accepted",
+                            submit_trace_id=turn_action_trace_id
+                        )
+                        try:
+                            generation_status = st.empty()
+                            generation_status.caption("Generating next situation...")
+                            log_turn_action_event(
+                                "submit_turn_action_llm_generation_started",
+                                submit_trace_id=turn_action_trace_id,
+                                session_id=session_id,
+                                turn_index=current_turn
+                            )
+                            next_situation = generate_next_situation(
+                                current_session=current_session,
+                                user_role=user_role,
+                                action_text=action_input_value,
+                                recent_turn_history=recent_turn_history,
+                                debug_trace_id=turn_action_trace_id
+                            )
+                            log_turn_action_event(
+                                "submit_turn_action_llm_generation_completed",
+                                submit_trace_id=turn_action_trace_id,
+                                next_situation_length=len((next_situation or "").strip()),
+                                next_situation_preview=short_debug_preview(next_situation)
+                            )
+                            log_turn_action_event(
+                                "submit_turn_action_after_generate_next_situation_returned",
+                                submit_trace_id=turn_action_trace_id,
+                                next_situation_type=type(next_situation).__name__,
+                                next_situation_length=len((next_situation or "").strip()),
+                                next_situation_preview=short_debug_preview(next_situation)
+                            )
+                            log_turn_action_event(
+                                "submit_turn_action_before_persistence_condition",
+                                submit_trace_id=turn_action_trace_id,
+                                has_next_situation=(next_situation or "").strip() != ""
+                            )
+                            if (next_situation or "").strip() == "":
+                                log_turn_action_event(
+                                    "submit_turn_action_complete_turn_failed",
+                                    submit_trace_id=turn_action_trace_id,
+                                    session_id=session_id,
+                                    turn_index=current_turn,
+                                    actor_user_id=submit_user_id,
+                                    failure_reason="empty_next_situation"
+                                )
+                                st.error("The next situation could not be generated. Please try again.")
+                            else:
+                                log_turn_action_event(
+                                    "submit_turn_action_session_update_started",
+                                    submit_trace_id=turn_action_trace_id,
+                                    session_id=session_id,
+                                    room_id=submit_room_id,
+                                    turn_index=current_turn,
+                                    actor_user_id=submit_user_id,
+                                    actor_role_name=user_role
+                                )
+                                log_turn_action_event(
+                                    "submit_turn_action_before_complete_turn",
+                                    submit_trace_id=turn_action_trace_id,
+                                    session_id=session_id,
+                                    actor_user_id=submit_user_id,
+                                    actor_role_name=user_role,
+                                    turn_index=current_turn,
+                                    submitted_action_length=len(action_input_value),
+                                    next_situation_length=len((next_situation or "").strip())
+                                )
+                                try:
+                                    advanced = complete_turn(
+                                        session_id=session_id,
+                                        expected_turn=current_turn,
+                                        acting_user_id=submit_user_id,
+                                        role_name=user_role,
+                                        submitted_action=action_input_value,
+                                        resulting_situation=next_situation
+                                    )
+                                except Exception as exc:
+                                    log_turn_action_event(
+                                        "submit_turn_action_complete_turn_exception",
+                                        submit_trace_id=turn_action_trace_id,
+                                        session_id=session_id,
+                                        turn_index=current_turn,
+                                        actor_user_id=submit_user_id,
+                                        exception_type=type(exc).__name__,
+                                        exception_message=str(exc)
+                                    )
+                                    st.error("The turn could not be saved. Please try again.")
+                                    raise
+                                log_turn_action_event(
+                                    "submit_turn_action_after_complete_turn",
+                                    submit_trace_id=turn_action_trace_id,
+                                    session_id=session_id
+                                )
+                                log_turn_action_event(
+                                    "submit_turn_action_complete_turn_result",
+                                    submit_trace_id=turn_action_trace_id,
+                                    advanced=advanced
+                                )
+
+                                if advanced:
+                                    add_ai_message(
+                                        session_id=session_id,
+                                        turn_index=current_turn,
+                                        user_id=submit_user_id,
+                                        role_name=user_role,
+                                        sender="action",
+                                        content=action_input_value
+                                    )
+                                    reloaded_session = get_session_by_room(submit_room_id)
+                                    reloaded_turn = None
+                                    reloaded_stage = None
+                                    reloaded_situation_preview = ""
+                                    if reloaded_session is not None:
+                                        reloaded_turn = reloaded_session.get("current_turn")
+                                        reloaded_stage = reloaded_session.get("current_turn")
+                                        reloaded_situation_preview = short_debug_preview(
+                                            reloaded_session.get("current_situation", "")
+                                        )
+                                    log_turn_action_event(
+                                        "submit_turn_action_reloaded_session_after_update",
+                                        submit_trace_id=turn_action_trace_id,
+                                        reloaded_current_turn=reloaded_turn,
+                                        reloaded_current_stage=reloaded_stage,
+                                        reloaded_current_situation_preview=reloaded_situation_preview
+                                    )
+                                    log_turn_action_event(
+                                        "submit_turn_action_session_updated",
+                                        submit_trace_id=turn_action_trace_id,
+                                        session_id=session_id,
+                                        updated_turn=current_turn + 1,
+                                        next_situation_preview=short_debug_preview(next_situation)
+                                    )
+                                    st.success(f"Story advanced to turn {current_turn + 1}")
+                                    st.rerun()
+                                else:
+                                    log_turn_action_event(
+                                        "submit_turn_action_complete_turn_failed",
+                                        submit_trace_id=turn_action_trace_id,
+                                        session_id=session_id,
+                                        turn_index=current_turn,
+                                        actor_user_id=submit_user_id
+                                    )
+                                    st.error(
+                                        "The turn could not be advanced. It may have already been updated elsewhere. "
+                                        "Please reload to see the latest situation."
+                                    )
+                        except Exception as exc:
+                            log_turn_action_event(
+                                "submit_turn_action_complete_turn_failed",
+                                submit_trace_id=turn_action_trace_id,
+                                session_id=session_id,
+                                turn_index=current_turn,
+                                actor_user_id=submit_user_id,
+                                exception_type=type(exc).__name__,
+                                exception_message=str(exc)
+                            )
+                            log_turn_action_event(
+                                "submit_turn_action_exception",
+                                submit_trace_id=turn_action_trace_id,
+                                exception_type=type(exc).__name__,
+                                exception_message=str(exc)
+                            )
+                            st.error("Something went wrong while generating the next situation. Please try again.")
 
         if st.button("Reload Turn"):
             st.rerun()

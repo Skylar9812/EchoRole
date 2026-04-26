@@ -882,10 +882,24 @@ def complete_turn(
     submitted_action,
     resulting_situation
 ):
+    log_database_event(
+        "complete_turn_enter",
+        session_id=session_id,
+        expected_turn=expected_turn,
+        acting_user_id=acting_user_id,
+        role_name=role_name,
+        submitted_action_length=len(submitted_action or ""),
+        resulting_situation_length=len(resulting_situation or "")
+    )
     conn = get_connection()
     cursor = conn.cursor()
 
     try:
+        log_database_event(
+            "complete_turn_before_insert_history",
+            session_id=session_id,
+            expected_turn=expected_turn
+        )
         cursor.execute(
             """
             INSERT INTO turn_history (
@@ -907,7 +921,18 @@ def complete_turn(
                 resulting_situation
             )
         )
+        log_database_event(
+            "complete_turn_after_insert_history",
+            session_id=session_id,
+            expected_turn=expected_turn,
+            history_row_id=cursor.lastrowid
+        )
 
+        log_database_event(
+            "complete_turn_before_session_update",
+            session_id=session_id,
+            expected_turn=expected_turn
+        )
         cursor.execute(
             """
             UPDATE sessions
@@ -917,18 +942,62 @@ def complete_turn(
             """,
             (resulting_situation, session_id, expected_turn)
         )
+        log_database_event(
+            "complete_turn_after_session_update",
+            session_id=session_id,
+            expected_turn=expected_turn,
+            updated_row_count=cursor.rowcount
+        )
 
         if cursor.rowcount != 1:
             conn.rollback()
+            log_database_event(
+                "complete_turn_failed_session_update",
+                session_id=session_id,
+                expected_turn=expected_turn,
+                updated_row_count=cursor.rowcount
+            )
             return False
 
+        log_database_event(
+            "complete_turn_before_commit",
+            session_id=session_id,
+            expected_turn=expected_turn
+        )
         conn.commit()
+        log_database_event(
+            "complete_turn_after_commit",
+            session_id=session_id,
+            expected_turn=expected_turn
+        )
         return True
-    except sqlite3.IntegrityError:
+    except sqlite3.IntegrityError as exc:
         conn.rollback()
+        log_database_event(
+            "complete_turn_integrity_error",
+            session_id=session_id,
+            expected_turn=expected_turn,
+            exception_type=type(exc).__name__,
+            error=str(exc)
+        )
         return False
+    except sqlite3.Error as exc:
+        conn.rollback()
+        log_database_event(
+            "complete_turn_sqlite_error",
+            session_id=session_id,
+            expected_turn=expected_turn,
+            exception_type=type(exc).__name__,
+            error=str(exc)
+        )
+        raise
     finally:
         conn.close()
+        log_database_event(
+            "complete_turn_connection_closed",
+            session_id=session_id,
+            expected_turn=expected_turn
+        )
 
 
 def has_ai_prompt_for_stage(session_id, stage_index, user_id):

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime
 import socket
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from urllib import error
 from urllib.parse import urlsplit
 
@@ -26,6 +26,18 @@ def get_role_brief(current_session, user_role):
     if user_role == "role_b":
         return current_session.get("role_b_brief", "")
     return ""
+
+
+def get_other_role(user_role):
+    if user_role == "role_a":
+        return "role_b"
+    if user_role == "role_b":
+        return "role_a"
+    return ""
+
+
+def get_other_role_brief(current_session, user_role):
+    return get_role_brief(current_session, get_other_role(user_role))
 
 
 def get_role_label(user_role):
@@ -164,6 +176,16 @@ class AIProvider:
     def validate_turn_action(self, action_text, current_session, user_role):
         raise NotImplementedError
 
+    def evaluate_turn_action(
+        self,
+        action_text,
+        current_session,
+        user_role,
+        recent_turn_history=None,
+        debug_trace_id=None
+    ):
+        raise NotImplementedError
+
     def generate_dynamic_ai_feedback(
         self,
         user_role,
@@ -176,7 +198,14 @@ class AIProvider:
     ):
         raise NotImplementedError
 
-    def generate_next_situation(self, current_session, user_role, action_text):
+    def generate_next_situation(
+        self,
+        current_session,
+        user_role,
+        action_text,
+        recent_turn_history=None,
+        debug_trace_id=None
+    ):
         raise NotImplementedError
 
 
@@ -331,6 +360,167 @@ def _validate_turn_action_local(action_text, current_session, user_role):
     }
 
 
+def _build_turn_action_result(
+    *,
+    accepted,
+    reason,
+    next_situation="",
+    risk_flags=None,
+    coach_note=""
+):
+    normalized_risk_flags = []
+    for flag in risk_flags or []:
+        normalized_flag = str(flag or "").strip()
+        if normalized_flag and normalized_flag not in normalized_risk_flags:
+            normalized_risk_flags.append(normalized_flag)
+
+    return {
+        "accepted": bool(accepted),
+        "reason": str(reason or "").strip(),
+        "next_situation": str(next_situation or "").strip() if accepted else "",
+        "risk_flags": normalized_risk_flags,
+        "coach_note": str(coach_note or "").strip(),
+    }
+
+
+def _get_local_turn_action_risk_flags(action_text, current_session, user_role):
+    text = (action_text or "").strip()
+    lowered = text.lower()
+    words = re.findall(r"[a-zA-Z']+", lowered)
+
+    risk_flags = []
+
+    unsafe_keywords = [
+        "threaten", "threat", "hurt them", "hurt her", "hurt him", "hurt my",
+        "hit", "slap", "punch", "shove", "violent", "violence", "intimidate",
+        "blackmail", "scream at", "yell at", "abuse", "abusive"
+    ]
+    if any(keyword in lowered for keyword in unsafe_keywords):
+        risk_flags.append("unsafe")
+
+    if any(keyword in lowered for keyword in ["yell", "scream", "blame", "attack", "punish"]):
+        risk_flags.append("escalatory")
+
+    if len(words) < 5 or len(text) < 18:
+        risk_flags.append("too brief")
+
+    action_keywords = [
+        "ask", "tell", "message", "apologize", "apologise", "propose",
+        "listen", "explain", "clarify", "request", "schedule", "meet",
+        "offer", "set", "agree", "discuss", "acknowledge", "invite",
+        "negotiate", "share", "restate", "summarize", "summarise"
+    ]
+    vague_phrases = [
+        "do better", "fix it", "handle it", "be nice", "be better",
+        "calm down", "try harder", "make it work", "talk to them",
+        "say something", "deal with it", "figure it out"
+    ]
+    if any(phrase in lowered for phrase in vague_phrases):
+        risk_flags.append("too vague")
+
+    if not any(keyword in lowered for keyword in action_keywords):
+        risk_flags.append("not actionable")
+
+    context_text = " ".join([
+        current_session.get("context", ""),
+        current_session.get("conflict", ""),
+        current_session.get("current_situation", ""),
+        get_role_brief(current_session, user_role),
+        get_other_role_brief(current_session, user_role),
+    ]).lower()
+    stopwords = {
+        "about", "after", "again", "because", "before", "from", "have",
+        "into", "that", "their", "them", "then", "there", "this", "will",
+        "with", "what", "when", "where", "would", "could", "should"
+    }
+    context_terms = {
+        word for word in re.findall(r"[a-zA-Z']+", context_text)
+        if len(word) >= 4 and word not in stopwords
+    }
+    action_terms = {
+        word for word in words
+        if len(word) >= 4 and word not in stopwords
+    }
+    if not context_terms.intersection(action_terms):
+        interpersonal_terms = [
+            "manager", "employee", "partner", "parent", "child", "conversation",
+            "message", "meeting", "deadline", "task", "relationship", "boundary",
+            "apology", "request", "expectation", "school", "career", "phone"
+        ]
+        if not any(term in lowered for term in interpersonal_terms):
+            risk_flags.append("unrelated")
+
+    return risk_flags
+
+
+def _evaluate_turn_action_local(
+    action_text,
+    current_session,
+    user_role,
+    recent_turn_history=None
+):
+    text = (action_text or "").strip()
+    if text == "":
+        return _build_turn_action_result(
+            accepted=False,
+            reason="Your action cannot be empty.",
+            risk_flags=["not actionable"],
+            coach_note="Describe one specific thing you would actually say or do."
+        )
+
+    risk_flags = _get_local_turn_action_risk_flags(
+        action_text=text,
+        current_session=current_session,
+        user_role=user_role
+    )
+    lowered_flags = {flag.lower() for flag in risk_flags}
+
+    if "unsafe" in lowered_flags:
+        return _build_turn_action_result(
+            accepted=False,
+            reason="This action is too unsafe or threatening to advance the scenario.",
+            risk_flags=risk_flags,
+            coach_note=(
+                "Revise it into a concrete but non-threatening response that addresses the conflict "
+                "without intimidation or abuse."
+            )
+        )
+
+    validation = _validate_turn_action_local(
+        action_text=text,
+        current_session=current_session,
+        user_role=user_role
+    )
+    if not validation["is_valid"]:
+        coach_note = validation["feedback"] or (
+            "Make the action more concrete, relevant to the conflict, and specific enough "
+            "for the other person to respond to."
+        )
+        return _build_turn_action_result(
+            accepted=False,
+            reason=coach_note,
+            risk_flags=risk_flags,
+            coach_note=(
+                "Try describing exactly what you would say or do, who you would address, "
+                "and what shift you are trying to create."
+            )
+        )
+
+    next_situation = _generate_next_situation_local(
+        current_session=current_session,
+        user_role=user_role,
+        action_text=text
+    )
+
+    return _build_turn_action_result(
+        accepted=True,
+        reason="This action is concrete and relevant enough to move the situation forward.",
+        next_situation=next_situation,
+        risk_flags=risk_flags,
+        coach_note="Stay specific and be ready for the other person to respond with tension, hesitation, or pushback."
+    )
+
+
 def _generate_dynamic_ai_feedback_local(
     user_role,
     user_text,
@@ -413,6 +603,227 @@ def _build_llm_coach_feedback_messages(
         {"role": "system", "content": system_message},
         {"role": "user", "content": user_message}
     ]
+
+
+def _build_llm_turn_action_messages(
+    action_text,
+    current_session,
+    user_role,
+    recent_turn_history=None
+):
+    acting_role_brief = get_role_brief(current_session, user_role)
+    other_role = get_other_role(user_role)
+    other_role_brief = get_role_brief(current_session, other_role)
+    recent_history_context = format_recent_turn_history(recent_turn_history)
+    if recent_history_context == "":
+        recent_history_context = "No prior turn history available."
+
+    system_message = (
+        "You evaluate whether a user's submitted interpersonal action should advance an EchoRole scenario. "
+        "Return strict JSON only, with no markdown and no extra commentary. "
+        "Use this exact shape: "
+        "{\"accepted\": true, \"reason\": \"...\", \"next_situation\": \"...\", "
+        "\"risk_flags\": [\"...\"], \"coach_note\": \"...\"}. "
+        "Accept only if the action is specific, relevant to the conflict, plausible for the role, "
+        "capable of changing the situation, and safe enough for this training product. "
+        "Reject vague intentions, unrelated actions, and abusive or threatening moves. "
+        "If rejected, set next_situation to an empty string. "
+        "If accepted, write next_situation in third person, preserve emotional tension, avoid resolving the conflict too quickly, "
+        "and give the other role something meaningful to respond to."
+    )
+    user_message = (
+        f"Scenario title: {current_session.get('title', '')}\n"
+        f"Scenario context: {current_session.get('context', '')}\n"
+        f"Scenario conflict: {current_session.get('conflict', '')}\n"
+        f"Current turn number: {current_session.get('current_turn', 1)}\n"
+        f"Current situation: {current_session.get('current_situation', '')}\n"
+        f"Acting role: {user_role}\n"
+        f"Acting role brief: {acting_role_brief}\n"
+        f"Other role brief: {other_role_brief}\n"
+        f"Recent turn history:\n{recent_history_context}\n\n"
+        f"Submitted action:\n{(action_text or '').strip()}\n\n"
+        "Validation criteria:\n"
+        "- Accept only if the action is concrete enough to act out.\n"
+        "- Accept only if it is relevant to the scenario and current conflict.\n"
+        "- Accept only if it is plausible for the acting role.\n"
+        "- Reject actions that are too vague, purely emotional, unrelated, or not actionable.\n"
+        "- Prefer safe rejection for abusive, threatening, or unsafe moves.\n"
+        "- If accepted, next_situation must describe what happened after the action and what pressure remains.\n"
+        "- Keep the reason concise and user-facing.\n"
+        "- risk_flags should use short labels such as: too vague, unrelated, escalatory, unsafe, not actionable.\n"
+        "- coach_note should be one short practical guidance sentence.\n"
+        "Return JSON only."
+    )
+
+    return [
+        {"role": "system", "content": system_message},
+        {"role": "user", "content": user_message},
+    ]
+
+
+def _build_llm_next_situation_messages(
+    action_text,
+    current_session,
+    user_role,
+    recent_turn_history=None
+):
+    acting_role_brief = get_role_brief(current_session, user_role)
+    other_role_brief = get_other_role_brief(current_session, user_role)
+    recent_history_context = format_recent_turn_history(recent_turn_history)
+    if recent_history_context == "":
+        recent_history_context = "No prior turn history available."
+
+    system_message = (
+        "You are generating the next current_situation for an interpersonal role-play training simulation. "
+        "Return only the next current_situation text, or a JSON object with a single next_situation field. "
+        "Do not judge validity, do not give coaching advice, and do not mention the prompt or system instructions."
+    )
+    user_message = (
+        f"Scenario title: {current_session.get('title', '')}\n"
+        f"Scenario context: {current_session.get('context', '')}\n"
+        f"Scenario conflict: {current_session.get('conflict', '')}\n"
+        f"Current turn number: {current_session.get('current_turn', 1)}\n"
+        f"Current situation: {current_session.get('current_situation', '')}\n"
+        f"Acting user role: {user_role}\n"
+        f"Acting user role brief: {acting_role_brief}\n"
+        f"Other role brief: {other_role_brief}\n"
+        f"Recent turn history:\n{recent_history_context}\n\n"
+        f"Submitted action:\n{(action_text or '').strip()}\n\n"
+        "Generate a new current_situation that:\n"
+        "- is written in third person\n"
+        "- describes what happens after the submitted action\n"
+        "- stays consistent with the scenario and roles\n"
+        "- preserves emotional tension\n"
+        "- does not resolve the whole conflict too quickly\n"
+        "- gives the other role something meaningful to respond to\n"
+        "- is concise, around 3-6 sentences\n"
+        "- does not include coaching advice\n"
+        "- does not mention JSON, the prompt, or system instructions\n"
+        "Return only the next current_situation."
+    )
+
+    return [
+        {"role": "system", "content": system_message},
+        {"role": "user", "content": user_message},
+    ]
+
+
+def _extract_json_object_from_text(raw_text):
+    text = (raw_text or "").strip()
+    if text == "":
+        raise ValueError("Empty response text.")
+
+    fenced_match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.DOTALL)
+    if fenced_match:
+        text = fenced_match.group(1).strip()
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            raise
+        return json.loads(text[start:end + 1])
+
+
+def _normalize_turn_action_risk_flags(raw_flags):
+    if raw_flags is None:
+        return []
+
+    if isinstance(raw_flags, str):
+        candidate_flags = re.split(r"[,|/]", raw_flags)
+    elif isinstance(raw_flags, list):
+        candidate_flags = raw_flags
+    else:
+        candidate_flags = [raw_flags]
+
+    normalized_flags: List[str] = []
+    for flag in candidate_flags:
+        normalized_flag = str(flag or "").strip()
+        if normalized_flag and normalized_flag not in normalized_flags:
+            normalized_flags.append(normalized_flag)
+    return normalized_flags
+
+
+def _normalize_turn_action_result(raw_result):
+    if not isinstance(raw_result, dict):
+        raise ValueError("Turn action response must be a JSON object.")
+
+    accepted_raw = raw_result.get("accepted")
+    if isinstance(accepted_raw, bool):
+        accepted = accepted_raw
+    elif isinstance(accepted_raw, str):
+        lowered = accepted_raw.strip().lower()
+        if lowered in {"true", "1", "yes"}:
+            accepted = True
+        elif lowered in {"false", "0", "no"}:
+            accepted = False
+        else:
+            raise ValueError("Invalid accepted value.")
+    else:
+        raise ValueError("Missing accepted value.")
+
+    reason = str(raw_result.get("reason") or "").strip()
+    coach_note = str(raw_result.get("coach_note") or "").strip()
+    next_situation = str(raw_result.get("next_situation") or "").strip()
+    risk_flags = _normalize_turn_action_risk_flags(raw_result.get("risk_flags"))
+    lowered_flags = {flag.lower() for flag in risk_flags}
+
+    if reason == "":
+        reason = coach_note
+    if reason == "":
+        raise ValueError("Missing reason value.")
+
+    blocking_flags = {
+        "too vague",
+        "unrelated",
+        "unsafe",
+        "not actionable",
+        "abusive",
+        "threatening",
+    }
+    if accepted and lowered_flags.intersection(blocking_flags):
+        accepted = False
+
+    if not accepted:
+        next_situation = ""
+        if coach_note == "":
+            coach_note = (
+                "Describe one specific, relevant, and safe action the other person could realistically respond to."
+            )
+    elif next_situation == "":
+        raise ValueError("Accepted result is missing next_situation.")
+
+    return _build_turn_action_result(
+        accepted=accepted,
+        reason=reason,
+        next_situation=next_situation,
+        risk_flags=risk_flags,
+        coach_note=coach_note,
+    )
+
+
+def _normalize_next_situation_response(raw_text):
+    text = str(raw_text or "").strip()
+    if text == "":
+        raise ValueError("Empty next_situation response.")
+
+    if text.startswith("{") or "```" in text:
+        try:
+            parsed = _extract_json_object_from_text(text)
+            if isinstance(parsed, dict):
+                next_situation = str(
+                    parsed.get("next_situation")
+                    or parsed.get("current_situation")
+                    or ""
+                ).strip()
+                if next_situation != "":
+                    return next_situation
+        except (ValueError, TypeError, json.JSONDecodeError):
+            pass
+
+    return text
 
 
 def _extract_chat_completion_result(response_data):
@@ -544,6 +955,21 @@ class LocalDeterministicAIProvider(AIProvider):
             user_role=user_role
         )
 
+    def evaluate_turn_action(
+        self,
+        action_text,
+        current_session,
+        user_role,
+        recent_turn_history=None,
+        debug_trace_id=None
+    ):
+        return _evaluate_turn_action_local(
+            action_text=action_text,
+            current_session=current_session,
+            user_role=user_role,
+            recent_turn_history=recent_turn_history
+        )
+
     def generate_dynamic_ai_feedback(
         self,
         user_role,
@@ -577,7 +1003,14 @@ class LocalDeterministicAIProvider(AIProvider):
         )
         return feedback
 
-    def generate_next_situation(self, current_session, user_role, action_text):
+    def generate_next_situation(
+        self,
+        current_session,
+        user_role,
+        action_text,
+        recent_turn_history=None,
+        debug_trace_id=None
+    ):
         return _generate_next_situation_local(
             current_session=current_session,
             user_role=user_role,
@@ -586,7 +1019,7 @@ class LocalDeterministicAIProvider(AIProvider):
 
 
 class DeepSeekOpenAICompatibleProvider(AIProvider):
-    """DeepSeek-backed OpenAI-compatible provider for coach feedback only."""
+    """DeepSeek-backed OpenAI-compatible provider for coach feedback and turn actions."""
 
     def __init__(self, fallback_provider: AIProvider, config: AIEngineConfig):
         self.fallback_provider = fallback_provider
@@ -643,6 +1076,104 @@ class DeepSeekOpenAICompatibleProvider(AIProvider):
             current_session=current_session,
             user_role=user_role
         )
+
+    def evaluate_turn_action(
+        self,
+        action_text,
+        current_session,
+        user_role,
+        recent_turn_history=None,
+        debug_trace_id=None
+    ):
+        fallback_result = self.fallback_provider.evaluate_turn_action(
+            action_text=action_text,
+            current_session=current_session,
+            user_role=user_role,
+            recent_turn_history=recent_turn_history,
+            debug_trace_id=debug_trace_id
+        )
+        api_key = self.config.resolved_llm_api_key()
+        if api_key == "":
+            return fallback_result
+
+        endpoint = f"{self.config.resolved_llm_api_base()}/chat/completions"
+        timeout_seconds = self.config.resolved_llm_timeout_seconds()
+        payload = {
+            "model": self.config.resolved_llm_model(),
+            "messages": _build_llm_turn_action_messages(
+                action_text=action_text,
+                current_session=current_session,
+                user_role=user_role,
+                recent_turn_history=recent_turn_history
+            ),
+            "stream": False
+        }
+        request_body = json.dumps(payload).encode("utf-8")
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+
+        _log_provider_event(
+            "submit_turn_action_provider_call_started",
+            debug_trace_id=debug_trace_id,
+            model=self.config.resolved_llm_model(),
+            api_base=self.config.resolved_llm_api_base(),
+            timeout_seconds=timeout_seconds
+        )
+
+        try:
+            http_status, response_body, elapsed_seconds = self._perform_chat_completion_request(
+                endpoint=endpoint,
+                request_body=request_body,
+                headers=headers,
+                timeout_seconds=timeout_seconds
+            )
+            extraction = _extract_chat_completion_result(json.loads(response_body))
+            _log_provider_event(
+                "submit_turn_action_provider_call_completed",
+                debug_trace_id=debug_trace_id,
+                http_status=http_status,
+                elapsed_seconds=round(elapsed_seconds, 3),
+                reply_extracted=extraction["reply_extracted"],
+                content_type=extraction["content_type"],
+                raw_reply_preview=_short_debug_text(extraction["text"], 240)
+            )
+
+            if not extraction["reply_extracted"]:
+                return fallback_result
+
+            try:
+                parsed_result = _extract_json_object_from_text(extraction["text"])
+                return _normalize_turn_action_result(parsed_result)
+            except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                _log_provider_event(
+                    "submit_turn_action_json_parse_failed",
+                    debug_trace_id=debug_trace_id,
+                    exception_type=type(exc).__name__,
+                    exception_message=str(exc),
+                    raw_reply_preview=_short_debug_text(extraction["text"], 240)
+                )
+                return fallback_result
+        except (
+            error.HTTPError,
+            error.URLError,
+            http.client.HTTPException,
+            socket.timeout,
+            TimeoutError,
+            ValueError,
+            KeyError,
+            IndexError,
+            json.JSONDecodeError
+        ) as exc:
+            _log_provider_event(
+                "submit_turn_action_provider_call_completed",
+                debug_trace_id=debug_trace_id,
+                used_fallback=True,
+                fallback_reason=type(exc).__name__,
+                exception_message=str(exc)
+            )
+            return fallback_result
 
     def generate_dynamic_ai_feedback(
         self,
@@ -872,12 +1403,100 @@ class DeepSeekOpenAICompatibleProvider(AIProvider):
                     pipeline_error=str(exc)
                 )
 
-    def generate_next_situation(self, current_session, user_role, action_text):
-        return self.fallback_provider.generate_next_situation(
+    def generate_next_situation(
+        self,
+        current_session,
+        user_role,
+        action_text,
+        recent_turn_history=None,
+        debug_trace_id=None
+    ):
+        fallback_next_situation = self.fallback_provider.generate_next_situation(
             current_session=current_session,
             user_role=user_role,
-            action_text=action_text
+            action_text=action_text,
+            recent_turn_history=recent_turn_history,
+            debug_trace_id=debug_trace_id
         )
+        api_key = self.config.resolved_llm_api_key()
+        if api_key == "":
+            _log_provider_event(
+                "submit_turn_action_llm_generation_failed_using_fallback",
+                debug_trace_id=debug_trace_id,
+                fallback_reason="missing_api_key"
+            )
+            return fallback_next_situation
+
+        endpoint = f"{self.config.resolved_llm_api_base()}/chat/completions"
+        timeout_seconds = self.config.resolved_llm_timeout_seconds()
+        payload = {
+            "model": self.config.resolved_llm_model(),
+            "messages": _build_llm_next_situation_messages(
+                action_text=action_text,
+                current_session=current_session,
+                user_role=user_role,
+                recent_turn_history=recent_turn_history
+            ),
+            "stream": False
+        }
+        request_body = json.dumps(payload).encode("utf-8")
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+
+        _log_provider_event(
+            "submit_turn_action_llm_generation_started",
+            debug_trace_id=debug_trace_id,
+            model=self.config.resolved_llm_model(),
+            api_base=self.config.resolved_llm_api_base(),
+            timeout_seconds=timeout_seconds
+        )
+
+        try:
+            http_status, response_body, elapsed_seconds = self._perform_chat_completion_request(
+                endpoint=endpoint,
+                request_body=request_body,
+                headers=headers,
+                timeout_seconds=timeout_seconds
+            )
+            extraction = _extract_chat_completion_result(json.loads(response_body))
+            if not extraction["reply_extracted"]:
+                _log_provider_event(
+                    "submit_turn_action_llm_generation_failed_using_fallback",
+                    debug_trace_id=debug_trace_id,
+                    fallback_reason="empty_llm_reply",
+                    http_status=http_status
+                )
+                return fallback_next_situation
+
+            next_situation = _normalize_next_situation_response(extraction["text"])
+            _log_provider_event(
+                "submit_turn_action_llm_generation_completed",
+                debug_trace_id=debug_trace_id,
+                http_status=http_status,
+                elapsed_seconds=round(elapsed_seconds, 3),
+                next_situation_preview=_short_debug_text(next_situation, 240)
+            )
+            return next_situation
+        except (
+            error.HTTPError,
+            error.URLError,
+            http.client.HTTPException,
+            socket.timeout,
+            TimeoutError,
+            ValueError,
+            KeyError,
+            IndexError,
+            json.JSONDecodeError
+        ) as exc:
+            _log_provider_event(
+                "submit_turn_action_llm_generation_failed_using_fallback",
+                debug_trace_id=debug_trace_id,
+                fallback_reason=type(exc).__name__,
+                exception_message=str(exc)
+            )
+            return fallback_next_situation
 
 
 _active_config = AIEngineConfig.from_env()
@@ -940,6 +1559,22 @@ def validate_turn_action(action_text, current_session, user_role):
     )
 
 
+def evaluate_turn_action(
+    action_text,
+    current_session,
+    user_role,
+    recent_turn_history=None,
+    debug_trace_id=None
+):
+    return get_active_ai_provider().evaluate_turn_action(
+        action_text=action_text,
+        current_session=current_session,
+        user_role=user_role,
+        recent_turn_history=recent_turn_history,
+        debug_trace_id=debug_trace_id
+    )
+
+
 def generate_dynamic_ai_feedback(
     user_role,
     user_text,
@@ -960,9 +1595,17 @@ def generate_dynamic_ai_feedback(
     )
 
 
-def generate_next_situation(current_session, user_role, action_text):
+def generate_next_situation(
+    current_session,
+    user_role,
+    action_text,
+    recent_turn_history=None,
+    debug_trace_id=None
+):
     return get_active_ai_provider().generate_next_situation(
         current_session=current_session,
         user_role=user_role,
-        action_text=action_text
+        action_text=action_text,
+        recent_turn_history=recent_turn_history,
+        debug_trace_id=debug_trace_id
     )
