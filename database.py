@@ -161,6 +161,33 @@ def init_db():
     )
     """)
 
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS pending_turn_actions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER NOT NULL,
+        turn_index INTEGER NOT NULL,
+        user_id TEXT NOT NULL,
+        role_name TEXT NOT NULL,
+        action_text TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        consumed_at TIMESTAMP DEFAULT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(id)
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS turn_suggestions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER NOT NULL,
+        turn_index INTEGER NOT NULL,
+        role_name TEXT NOT NULL,
+        suggestion_text TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (session_id) REFERENCES sessions(id)
+    )
+    """)
+
     # 唯一索引，避免重复数据
     cursor.execute("""
     CREATE UNIQUE INDEX IF NOT EXISTS idx_members_user_room
@@ -180,6 +207,21 @@ def init_db():
     cursor.execute("""
     CREATE UNIQUE INDEX IF NOT EXISTS idx_turn_history_session_turn
     ON turn_history(session_id, turn_index)
+    """)
+
+    cursor.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_turn_actions_session_turn_user
+    ON pending_turn_actions(session_id, turn_index, user_id)
+    """)
+
+    cursor.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_turn_actions_session_turn_role
+    ON pending_turn_actions(session_id, turn_index, role_name)
+    """)
+
+    cursor.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_turn_suggestions_session_turn_role
+    ON turn_suggestions(session_id, turn_index, role_name)
     """)
 
     conn.commit()
@@ -644,6 +686,323 @@ def get_turn_history(session_id):
     ]
 
 
+def save_pending_turn_action(session_id, turn_index, user_id, role_name, action_text):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute(
+            """
+            SELECT id
+            FROM pending_turn_actions
+            WHERE session_id = ? AND turn_index = ? AND user_id = ?
+            LIMIT 1
+            """,
+            (session_id, turn_index, user_id)
+        )
+        existing = cursor.fetchone()
+
+        if existing is None:
+            cursor.execute(
+                """
+                INSERT INTO pending_turn_actions (
+                    session_id,
+                    turn_index,
+                    user_id,
+                    role_name,
+                    action_text,
+                    status,
+                    consumed_at
+                )
+                VALUES (?, ?, ?, ?, ?, 'pending', NULL)
+                """,
+                (session_id, turn_index, user_id, role_name, action_text)
+            )
+            row_id = cursor.lastrowid
+        else:
+            row_id = existing["id"]
+            cursor.execute(
+                """
+                UPDATE pending_turn_actions
+                SET role_name = ?,
+                    action_text = ?,
+                    status = 'pending',
+                    consumed_at = NULL,
+                    created_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (role_name, action_text, row_id)
+            )
+
+        conn.commit()
+        return row_id
+    finally:
+        conn.close()
+
+
+def get_pending_turn_actions(session_id, turn_index, statuses=None):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    normalized_statuses = statuses or ("pending", "generating")
+    placeholders = ", ".join(["?"] * len(normalized_statuses))
+    query = f"""
+        SELECT
+            id,
+            session_id,
+            turn_index,
+            user_id,
+            role_name,
+            action_text,
+            status,
+            created_at,
+            consumed_at
+        FROM pending_turn_actions
+        WHERE session_id = ? AND turn_index = ? AND status IN ({placeholders})
+        ORDER BY created_at ASC, id ASC
+    """
+    params = [session_id, turn_index, *normalized_statuses]
+    cursor.execute(query, params)
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [
+        {
+            "id": row["id"],
+            "session_id": row["session_id"],
+            "turn_index": row["turn_index"],
+            "user_id": row["user_id"],
+            "role_name": row["role_name"],
+            "action_text": row["action_text"],
+            "status": row["status"],
+            "created_at": row["created_at"],
+            "consumed_at": row["consumed_at"],
+        }
+        for row in rows
+    ]
+
+
+def get_pending_turn_actions_for_session_turn(session_id, turn_index, statuses=None):
+    return get_pending_turn_actions(
+        session_id=session_id,
+        turn_index=turn_index,
+        statuses=statuses or ("pending", "generating")
+    )
+
+
+def get_pending_turn_action_for_user(session_id, turn_index, user_id, statuses=None):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    normalized_statuses = statuses or ("pending", "generating")
+    placeholders = ", ".join(["?"] * len(normalized_statuses))
+    query = f"""
+        SELECT
+            id,
+            session_id,
+            turn_index,
+            user_id,
+            role_name,
+            action_text,
+            status,
+            created_at,
+            consumed_at
+        FROM pending_turn_actions
+        WHERE session_id = ? AND turn_index = ? AND user_id = ? AND status IN ({placeholders})
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+    """
+    params = [session_id, turn_index, user_id, *normalized_statuses]
+    cursor.execute(query, params)
+
+    row = cursor.fetchone()
+    conn.close()
+
+    if row is None:
+        return None
+
+    return {
+        "id": row["id"],
+        "session_id": row["session_id"],
+        "turn_index": row["turn_index"],
+        "user_id": row["user_id"],
+        "role_name": row["role_name"],
+        "action_text": row["action_text"],
+        "status": row["status"],
+        "created_at": row["created_at"],
+        "consumed_at": row["consumed_at"],
+    }
+
+
+def get_turn_suggestion(session_id, turn_index, role_name):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT suggestion_text
+        FROM turn_suggestions
+        WHERE session_id = ? AND turn_index = ? AND role_name = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (session_id, turn_index, role_name)
+    )
+
+    row = cursor.fetchone()
+    conn.close()
+
+    if row is None:
+        return None
+
+    return row["suggestion_text"]
+
+
+def has_completed_turn(session_id, turn_index):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT id
+        FROM turn_history
+        WHERE session_id = ? AND turn_index = ?
+        LIMIT 1
+        """,
+        (session_id, turn_index)
+    )
+
+    row = cursor.fetchone()
+    conn.close()
+    return row is not None
+
+
+def claim_pending_turn_actions_for_generation(session_id, turn_index):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("BEGIN IMMEDIATE")
+
+        cursor.execute(
+            """
+            SELECT id
+            FROM turn_history
+            WHERE session_id = ? AND turn_index = ?
+            LIMIT 1
+            """,
+            (session_id, turn_index)
+        )
+        completed_row = cursor.fetchone()
+        if completed_row is not None:
+            conn.rollback()
+            return {"status": "already_completed", "actions": None}
+
+        cursor.execute(
+            """
+            SELECT
+                id,
+                session_id,
+                turn_index,
+                user_id,
+                role_name,
+                action_text,
+                status,
+                created_at,
+                consumed_at
+            FROM pending_turn_actions
+            WHERE session_id = ? AND turn_index = ? AND status = 'pending'
+            ORDER BY created_at ASC, id ASC
+            """,
+            (session_id, turn_index)
+        )
+        rows = cursor.fetchall()
+
+        if len(rows) < 2:
+            conn.rollback()
+            return {"status": "waiting", "actions": None}
+
+        actions_by_role = {
+            row["role_name"]: {
+                "id": row["id"],
+                "session_id": row["session_id"],
+                "turn_index": row["turn_index"],
+                "user_id": row["user_id"],
+                "role_name": row["role_name"],
+                "action_text": row["action_text"],
+                "status": row["status"],
+                "created_at": row["created_at"],
+                "consumed_at": row["consumed_at"],
+            }
+            for row in rows
+        }
+
+        if "role_a" not in actions_by_role or "role_b" not in actions_by_role:
+            conn.rollback()
+            return {"status": "waiting", "actions": None}
+
+        cursor.execute(
+            """
+            UPDATE pending_turn_actions
+            SET status = 'generating'
+            WHERE session_id = ? AND turn_index = ? AND status = 'pending'
+            """,
+            (session_id, turn_index)
+        )
+
+        if cursor.rowcount < 2:
+            conn.rollback()
+            return {"status": "waiting", "actions": None}
+
+        conn.commit()
+        return {"status": "ready", "actions": actions_by_role}
+    except sqlite3.Error:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def mark_pending_turn_actions_consumed(session_id, turn_index):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        UPDATE pending_turn_actions
+        SET status = 'consumed',
+            consumed_at = CURRENT_TIMESTAMP
+        WHERE session_id = ? AND turn_index = ? AND status IN ('pending', 'generating')
+        """,
+        (session_id, turn_index)
+    )
+
+    conn.commit()
+    affected = cursor.rowcount
+    conn.close()
+    return affected
+
+
+def reset_pending_turn_actions_to_pending(session_id, turn_index):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        UPDATE pending_turn_actions
+        SET status = 'pending'
+        WHERE session_id = ? AND turn_index = ? AND status = 'generating'
+        """,
+        (session_id, turn_index)
+    )
+
+    conn.commit()
+    affected = cursor.rowcount
+    conn.close()
+    return affected
+
+
 def get_progression_history(session_id):
     conn = get_connection()
     cursor = conn.cursor()
@@ -995,6 +1354,187 @@ def complete_turn(
         conn.close()
         log_database_event(
             "complete_turn_connection_closed",
+            session_id=session_id,
+            expected_turn=expected_turn
+        )
+
+
+def complete_joint_turn(
+    session_id,
+    expected_turn,
+    submitted_action_summary,
+    resulting_situation,
+    role_a_suggestion="",
+    role_b_suggestion=""
+):
+    log_database_event(
+        "complete_joint_turn_enter",
+        session_id=session_id,
+        expected_turn=expected_turn,
+        submitted_action_summary_length=len(submitted_action_summary or ""),
+        resulting_situation_length=len(resulting_situation or "")
+    )
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("BEGIN IMMEDIATE")
+
+        log_database_event(
+            "complete_joint_turn_before_insert_history",
+            session_id=session_id,
+            expected_turn=expected_turn
+        )
+        cursor.execute(
+            """
+            INSERT INTO turn_history (
+                session_id,
+                turn_index,
+                acting_user_id,
+                role_name,
+                submitted_action,
+                resulting_situation
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                expected_turn,
+                "joint_turn",
+                "joint",
+                submitted_action_summary,
+                resulting_situation
+            )
+        )
+        log_database_event(
+            "complete_joint_turn_after_insert_history",
+            session_id=session_id,
+            expected_turn=expected_turn,
+            history_row_id=cursor.lastrowid
+        )
+
+        log_database_event(
+            "complete_joint_turn_before_session_update",
+            session_id=session_id,
+            expected_turn=expected_turn
+        )
+        cursor.execute(
+            """
+            UPDATE sessions
+            SET current_stage = current_stage + 1,
+                current_situation = ?
+            WHERE id = ? AND current_stage = ?
+            """,
+            (resulting_situation, session_id, expected_turn)
+        )
+        log_database_event(
+            "complete_joint_turn_after_session_update",
+            session_id=session_id,
+            expected_turn=expected_turn,
+            updated_row_count=cursor.rowcount
+        )
+
+        if cursor.rowcount != 1:
+            conn.rollback()
+            log_database_event(
+                "complete_joint_turn_failed_session_update",
+                session_id=session_id,
+                expected_turn=expected_turn,
+                updated_row_count=cursor.rowcount
+            )
+            return False
+
+        next_turn_index = expected_turn + 1
+        cursor.execute(
+            """
+            INSERT OR REPLACE INTO turn_suggestions (
+                session_id,
+                turn_index,
+                role_name,
+                suggestion_text,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """,
+            (session_id, next_turn_index, "role_a", role_a_suggestion or "")
+        )
+        cursor.execute(
+            """
+            INSERT OR REPLACE INTO turn_suggestions (
+                session_id,
+                turn_index,
+                role_name,
+                suggestion_text,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """,
+            (session_id, next_turn_index, "role_b", role_b_suggestion or "")
+        )
+        log_database_event(
+            "complete_joint_turn_after_suggestions_save",
+            session_id=session_id,
+            expected_turn=expected_turn,
+            next_turn_index=next_turn_index
+        )
+
+        log_database_event(
+            "complete_joint_turn_before_consume_pending",
+            session_id=session_id,
+            expected_turn=expected_turn
+        )
+        cursor.execute(
+            """
+            UPDATE pending_turn_actions
+            SET status = 'consumed',
+                consumed_at = CURRENT_TIMESTAMP
+            WHERE session_id = ? AND turn_index = ? AND status IN ('pending', 'generating')
+            """,
+            (session_id, expected_turn)
+        )
+        log_database_event(
+            "complete_joint_turn_after_consume_pending",
+            session_id=session_id,
+            expected_turn=expected_turn,
+            consumed_row_count=cursor.rowcount
+        )
+
+        log_database_event(
+            "complete_joint_turn_before_commit",
+            session_id=session_id,
+            expected_turn=expected_turn
+        )
+        conn.commit()
+        log_database_event(
+            "complete_joint_turn_after_commit",
+            session_id=session_id,
+            expected_turn=expected_turn
+        )
+        return True
+    except sqlite3.IntegrityError as exc:
+        conn.rollback()
+        log_database_event(
+            "complete_joint_turn_integrity_error",
+            session_id=session_id,
+            expected_turn=expected_turn,
+            exception_type=type(exc).__name__,
+            error=str(exc)
+        )
+        return False
+    except sqlite3.Error as exc:
+        conn.rollback()
+        log_database_event(
+            "complete_joint_turn_sqlite_error",
+            session_id=session_id,
+            expected_turn=expected_turn,
+            exception_type=type(exc).__name__,
+            error=str(exc)
+        )
+        raise
+    finally:
+        conn.close()
+        log_database_event(
+            "complete_joint_turn_connection_closed",
             session_id=session_id,
             expected_turn=expected_turn
         )

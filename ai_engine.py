@@ -208,6 +208,16 @@ class AIProvider:
     ):
         raise NotImplementedError
 
+    def generate_next_situation_from_joint_actions(
+        self,
+        current_session,
+        role_a_action,
+        role_b_action,
+        recent_turn_history=None,
+        debug_trace_id=None
+    ):
+        raise NotImplementedError
+
 
 def _build_turn_coach_prompt_local(
     current_session,
@@ -708,6 +718,59 @@ def _build_llm_next_situation_messages(
     ]
 
 
+def _build_llm_joint_next_situation_messages(
+    current_session,
+    role_a_action,
+    role_b_action,
+    recent_turn_history=None
+):
+    recent_history_context = format_recent_turn_history(recent_turn_history)
+    if recent_history_context == "":
+        recent_history_context = "No prior turn history available."
+
+    system_message = (
+        "You are generating the next turn platform for an interpersonal role-play training simulation. "
+        "Return strict JSON only with exactly these keys: next_situation, role_a_suggestion, role_b_suggestion. "
+        "Do not judge validity, do not declare a winner, do not reveal private role briefs, and do not mention the prompt or system instructions."
+    )
+    user_message = (
+        f"Scenario title: {current_session.get('title', '')}\n"
+        f"Scenario context: {current_session.get('context', '')}\n"
+        f"Scenario conflict: {current_session.get('conflict', '')}\n"
+        f"Current turn number: {current_session.get('current_turn', 1)}\n"
+        f"Current situation: {current_session.get('current_situation', '')}\n"
+        f"Role A brief: {current_session.get('role_a_brief', '')}\n"
+        f"Role B brief: {current_session.get('role_b_brief', '')}\n"
+        f"Role A action:\n{(role_a_action or '').strip()}\n\n"
+        f"Role B action:\n{(role_b_action or '').strip()}\n\n"
+        f"Recent turn history:\n{recent_history_context}\n\n"
+        "Requirements for next_situation:\n"
+        "- neutral third-person narration\n"
+        "- maximum 3 sentences\n"
+        "- sets up only the next conversational moment\n"
+        "- reflects both actions fairly without over-explaining feelings\n"
+        "- does not decide the next move for either participant\n"
+        "- usually ends with an open question, tension point, or unresolved moment\n\n"
+        "Requirements for role_a_suggestion and role_b_suggestion:\n"
+        "- private coaching for that role only\n"
+        "- 2 to 4 concise bullet points or short sentences\n"
+        "- written in second person\n"
+        "- may refer to visible actions and the shared situation\n"
+        "- must not reveal the other role's private brief\n\n"
+        "Return JSON only in this exact shape:\n"
+        "{\n"
+        '  "next_situation": "...",\n'
+        '  "role_a_suggestion": "...",\n'
+        '  "role_b_suggestion": "..."\n'
+        "}"
+    )
+
+    return [
+        {"role": "system", "content": system_message},
+        {"role": "user", "content": user_message},
+    ]
+
+
 def _extract_json_object_from_text(raw_text):
     text = (raw_text or "").strip()
     if text == "":
@@ -826,6 +889,131 @@ def _normalize_next_situation_response(raw_text):
     return text
 
 
+def _build_joint_turn_generation_result(
+    *,
+    next_situation,
+    role_a_suggestion,
+    role_b_suggestion
+):
+    return {
+        "next_situation": str(next_situation or "").strip(),
+        "role_a_suggestion": str(role_a_suggestion or "").strip(),
+        "role_b_suggestion": str(role_b_suggestion or "").strip(),
+    }
+
+
+def _limit_to_max_sentences(text, max_sentences=3):
+    normalized_text = str(text or "").strip()
+    if normalized_text == "":
+        return ""
+
+    sentence_parts = re.split(r"(?<=[.!?])\s+", normalized_text)
+    compact_parts = [part.strip() for part in sentence_parts if part.strip()]
+    if len(compact_parts) <= max_sentences:
+        return normalized_text
+    return " ".join(compact_parts[:max_sentences]).strip()
+
+
+def _normalize_suggestion_text(raw_value):
+    if isinstance(raw_value, list):
+        items = [str(item or "").strip() for item in raw_value if str(item or "").strip()]
+        if not items:
+            return ""
+        return "\n".join(
+            item if item.startswith("-") else f"- {item}"
+            for item in items
+        ).strip()
+
+    return str(raw_value or "").strip()
+
+
+def _build_default_role_suggestion(
+    current_session,
+    role_name,
+    own_action,
+    other_action
+):
+    role_brief = get_role_brief(current_session, role_name).strip()
+    role_focus = role_brief.split(".")[0].strip()
+    own_signal = classify_action_signal(own_action or "")
+    other_action_text = (other_action or "").strip()
+
+    guidance_lines = []
+    if role_focus:
+        guidance_lines.append(f"- Stay grounded in your role focus: {role_focus}.")
+
+    if other_action_text:
+        guidance_lines.append(
+            "- Respond directly to the other participant's latest action instead of broadening the conflict."
+        )
+
+    if own_signal == "repair":
+        guidance_lines.append("- Keep your tone steady and make one clear request or question.")
+    elif own_signal == "clarify":
+        guidance_lines.append("- Ask one concrete follow-up question or name one specific point you want clarified.")
+    elif own_signal == "escalate":
+        guidance_lines.append("- Slow the pace down and choose one firm but non-threatening sentence for your next move.")
+    else:
+        guidance_lines.append("- Decide on one specific sentence, question, or boundary you want to put on the table next.")
+
+    return "\n".join(guidance_lines[:3]).strip()
+
+
+def _build_default_joint_turn_result(
+    current_session,
+    role_a_action,
+    role_b_action
+):
+    next_situation = _generate_next_situation_from_joint_actions_local(
+        current_session=current_session,
+        role_a_action=role_a_action,
+        role_b_action=role_b_action
+    )
+    role_a_suggestion = _build_default_role_suggestion(
+        current_session=current_session,
+        role_name="role_a",
+        own_action=role_a_action,
+        other_action=role_b_action
+    )
+    role_b_suggestion = _build_default_role_suggestion(
+        current_session=current_session,
+        role_name="role_b",
+        own_action=role_b_action,
+        other_action=role_a_action
+    )
+    return _build_joint_turn_generation_result(
+        next_situation=next_situation,
+        role_a_suggestion=role_a_suggestion,
+        role_b_suggestion=role_b_suggestion
+    )
+
+
+def _normalize_joint_turn_generation_result(raw_result, fallback_result):
+    if not isinstance(raw_result, dict):
+        raise ValueError("Joint turn result must be a JSON object.")
+
+    next_situation = _limit_to_max_sentences(
+        str(raw_result.get("next_situation") or "").strip(),
+        max_sentences=3
+    )
+    if next_situation == "":
+        raise ValueError("Missing next_situation.")
+
+    role_a_suggestion = _normalize_suggestion_text(raw_result.get("role_a_suggestion"))
+    role_b_suggestion = _normalize_suggestion_text(raw_result.get("role_b_suggestion"))
+
+    if role_a_suggestion == "":
+        role_a_suggestion = fallback_result["role_a_suggestion"]
+    if role_b_suggestion == "":
+        role_b_suggestion = fallback_result["role_b_suggestion"]
+
+    return _build_joint_turn_generation_result(
+        next_situation=next_situation,
+        role_a_suggestion=role_a_suggestion,
+        role_b_suggestion=role_b_suggestion
+    )
+
+
 def _extract_chat_completion_result(response_data):
     result = {
         "text": "",
@@ -933,6 +1121,32 @@ def _generate_next_situation_local(current_session, user_role, action_text):
     )
 
 
+def _generate_next_situation_from_joint_actions_local(
+    current_session,
+    role_a_action,
+    role_b_action,
+    recent_turn_history=None
+):
+    role_a_signal = classify_action_signal(role_a_action)
+    role_b_signal = classify_action_signal(role_b_action)
+
+    if "escalate" in {role_a_signal, role_b_signal}:
+        return (
+            "Both sides have now put their positions on the table, and the tension in the conversation is harder to ignore. "
+            "Who will try to slow the exchange down without backing away from the issue?"
+        )
+    elif "repair" in {role_a_signal, role_b_signal} and "clarify" in {role_a_signal, role_b_signal}:
+        return (
+            "Both sides have started addressing the issue more directly, but the disagreement is still unresolved. "
+            "What will each person choose to clarify first?"
+        )
+
+    return (
+        "Both sides have now responded to the issue, and the conversation is moving into a more direct phase. "
+        "What will each person decide to put on the table next?"
+    )
+
+
 class LocalDeterministicAIProvider(AIProvider):
     def build_turn_coach_prompt(
         self,
@@ -1015,6 +1229,20 @@ class LocalDeterministicAIProvider(AIProvider):
             current_session=current_session,
             user_role=user_role,
             action_text=action_text
+        )
+
+    def generate_next_situation_from_joint_actions(
+        self,
+        current_session,
+        role_a_action,
+        role_b_action,
+        recent_turn_history=None,
+        debug_trace_id=None
+    ):
+        return _build_default_joint_turn_result(
+            current_session=current_session,
+            role_a_action=role_a_action,
+            role_b_action=role_b_action
         )
 
 
@@ -1498,6 +1726,125 @@ class DeepSeekOpenAICompatibleProvider(AIProvider):
             )
             return fallback_next_situation
 
+    def generate_next_situation_from_joint_actions(
+        self,
+        current_session,
+        role_a_action,
+        role_b_action,
+        recent_turn_history=None,
+        debug_trace_id=None
+    ):
+        fallback_result = self.fallback_provider.generate_next_situation_from_joint_actions(
+            current_session=current_session,
+            role_a_action=role_a_action,
+            role_b_action=role_b_action,
+            recent_turn_history=recent_turn_history,
+            debug_trace_id=debug_trace_id
+        )
+        api_key = self.config.resolved_llm_api_key()
+        if api_key == "":
+            _log_provider_event(
+                "joint_turn_generation_failed_using_fallback",
+                debug_trace_id=debug_trace_id,
+                fallback_reason="missing_api_key"
+            )
+            return fallback_result
+
+        endpoint = f"{self.config.resolved_llm_api_base()}/chat/completions"
+        timeout_seconds = self.config.resolved_llm_timeout_seconds()
+        payload = {
+            "model": self.config.resolved_llm_model(),
+            "messages": _build_llm_joint_next_situation_messages(
+                current_session=current_session,
+                role_a_action=role_a_action,
+                role_b_action=role_b_action,
+                recent_turn_history=recent_turn_history
+            ),
+            "stream": False
+        }
+        request_body = json.dumps(payload).encode("utf-8")
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+
+        _log_provider_event(
+            "joint_turn_generation_started",
+            debug_trace_id=debug_trace_id,
+            model=self.config.resolved_llm_model(),
+            api_base=self.config.resolved_llm_api_base(),
+            timeout_seconds=timeout_seconds
+        )
+
+        try:
+            http_status, response_body, elapsed_seconds = self._perform_chat_completion_request(
+                endpoint=endpoint,
+                request_body=request_body,
+                headers=headers,
+                timeout_seconds=timeout_seconds
+            )
+            extraction = _extract_chat_completion_result(json.loads(response_body))
+            if not extraction["reply_extracted"]:
+                _log_provider_event(
+                    "joint_turn_generation_failed_using_fallback",
+                    debug_trace_id=debug_trace_id,
+                    fallback_reason="empty_llm_reply",
+                    http_status=http_status
+                )
+                return fallback_result
+
+            parsed_result = _normalize_joint_turn_generation_result(
+                _extract_json_object_from_text(extraction["text"]),
+                fallback_result=fallback_result
+            )
+            _log_provider_event(
+                "joint_turn_llm_json_parsed",
+                debug_trace_id=debug_trace_id,
+                http_status=http_status
+            )
+            _log_provider_event(
+                "joint_turn_next_situation_generated",
+                debug_trace_id=debug_trace_id,
+                next_situation_preview=_short_debug_text(parsed_result["next_situation"], 240)
+            )
+            _log_provider_event(
+                "joint_turn_role_suggestions_generated",
+                debug_trace_id=debug_trace_id,
+                role_a_suggestion_preview=_short_debug_text(parsed_result["role_a_suggestion"], 160),
+                role_b_suggestion_preview=_short_debug_text(parsed_result["role_b_suggestion"], 160)
+            )
+            _log_provider_event(
+                "joint_turn_generation_completed",
+                debug_trace_id=debug_trace_id,
+                http_status=http_status,
+                elapsed_seconds=round(elapsed_seconds, 3),
+                next_situation_preview=_short_debug_text(parsed_result["next_situation"], 240)
+            )
+            return parsed_result
+        except (
+            error.HTTPError,
+            error.URLError,
+            http.client.HTTPException,
+            socket.timeout,
+            TimeoutError,
+            ValueError,
+            KeyError,
+            IndexError,
+            json.JSONDecodeError
+        ) as exc:
+            _log_provider_event(
+                "joint_turn_generation_failed_using_fallback",
+                debug_trace_id=debug_trace_id,
+                fallback_reason=type(exc).__name__,
+                exception_message=str(exc),
+                raw_reply_preview=(
+                    _short_debug_text(extraction["text"], 240)
+                    if "extraction" in locals() and isinstance(extraction, dict)
+                    else ""
+                )
+            )
+            return fallback_result
+
 
 _active_config = AIEngineConfig.from_env()
 _local_provider: AIProvider = LocalDeterministicAIProvider()
@@ -1606,6 +1953,22 @@ def generate_next_situation(
         current_session=current_session,
         user_role=user_role,
         action_text=action_text,
+        recent_turn_history=recent_turn_history,
+        debug_trace_id=debug_trace_id
+    )
+
+
+def generate_next_situation_from_joint_actions(
+    current_session,
+    role_a_action,
+    role_b_action,
+    recent_turn_history=None,
+    debug_trace_id=None
+):
+    return get_active_ai_provider().generate_next_situation_from_joint_actions(
+        current_session=current_session,
+        role_a_action=role_a_action,
+        role_b_action=role_b_action,
         recent_turn_history=recent_turn_history,
         debug_trace_id=debug_trace_id
     )
