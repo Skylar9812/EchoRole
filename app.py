@@ -88,7 +88,222 @@ def should_show_ai_coach_debug():
     )
 
 
-def render_ai_coach_messages(message_container, ai_messages, submit_trace_id=None):
+def inject_readability_styles():
+    st.markdown(
+        """
+        <style>
+        .stApp {
+            font-size: 1.08rem;
+        }
+
+        .stApp h1 {
+            font-size: 2.45rem;
+            line-height: 1.2;
+        }
+
+        .stApp h2 {
+            font-size: 2rem;
+            line-height: 1.25;
+        }
+
+        .stApp h3 {
+            font-size: 1.65rem;
+            line-height: 1.3;
+        }
+
+        .stApp h4 {
+            font-size: 1.35rem;
+            line-height: 1.35;
+        }
+
+        .stApp p,
+        .stApp li,
+        .stApp label,
+        .stApp div[data-testid="stMarkdownContainer"] p,
+        .stApp div[data-testid="stMarkdownContainer"] li,
+        .stApp .stText,
+        .stApp [data-testid="stCaptionContainer"] {
+            font-size: 1.08rem;
+            line-height: 1.6;
+        }
+
+        .stApp [data-testid="stCaptionContainer"] {
+            font-size: 1rem;
+        }
+
+        .stApp [data-testid="stAlert"] p,
+        .stApp [data-testid="stAlert"] div,
+        .stApp [data-testid="stCodeBlock"] code,
+        .stApp code {
+            font-size: 1.02rem;
+            line-height: 1.55;
+        }
+
+        .stApp textarea,
+        .stApp input,
+        .stApp [data-baseweb="select"] div,
+        .stApp [data-baseweb="select"] input {
+            font-size: 1.05rem !important;
+        }
+
+        .stApp .stButton > button,
+        .stApp .stDownloadButton > button,
+        .stApp .stFormSubmitButton > button {
+            font-size: 1.05rem;
+            padding-top: 0.55rem;
+            padding-bottom: 0.55rem;
+        }
+
+        .stApp [data-testid="stExpander"] summary p,
+        .stApp [data-testid="stExpander"] summary span {
+            font-size: 1.08rem;
+        }
+
+        .stApp [data-testid="stVerticalBlock"] > div {
+            gap: 0.45rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+
+
+def get_role_display_name(role_name):
+    if role_name == "role_a":
+        return "Role A"
+    if role_name == "role_b":
+        return "Role B"
+    return "Unassigned"
+
+
+def render_text_card(title, body, *, caption=None, empty_message="Not available yet."):
+    with st.container(border=True):
+        st.markdown(f"**{title}**")
+        if caption:
+            st.caption(caption)
+        value = normalize_app_text(body)
+        if value.strip():
+            st.write(value)
+        else:
+            st.caption(empty_message)
+
+
+def render_profile_card(user_profile, user_role):
+    display_name = normalize_app_text(
+        (user_profile or {}).get("display_name")
+        or st.session_state.get("username")
+        or ""
+    )
+    mbti = normalize_app_text((user_profile or {}).get("mbti"))
+    priorities = normalize_app_text((user_profile or {}).get("priorities"))
+
+    with st.container(border=True):
+        st.markdown("**Profile**")
+        st.write(f"**Display name:** {display_name or 'Not set'}")
+        st.write(f"**Role:** {get_role_display_name(user_role)}")
+        if mbti:
+            st.write(f"**MBTI:** {mbti}")
+        if priorities:
+            st.write(f"**Profile context:** {priorities}")
+        if not mbti and not priorities:
+            st.caption("No additional profile context yet.")
+
+
+def render_current_turn_card(current_turn, user_role):
+    with st.container(border=True):
+        st.markdown("**Current Turn**")
+        st.write(f"**Turn:** {current_turn}")
+        st.write(f"**Your role:** {get_role_display_name(user_role)}")
+
+
+def render_recent_progression_history_card(recent_turn_history):
+    with st.container(border=True):
+        st.markdown("**Recent Progression History**")
+        if not recent_turn_history:
+            st.caption("No previous actions yet.")
+            return
+
+        for turn in recent_turn_history:
+            with st.container(border=True):
+                st.write(
+                    f"**Turn {turn.get('turn_index', '?')} · {get_role_display_name(turn.get('role_name'))}**"
+                )
+                st.write(
+                    f"**Action:** {normalize_app_text(turn.get('submitted_action')) or '(empty)'}"
+                )
+                st.write(
+                    f"**Result:** {normalize_app_text(turn.get('resulting_situation')) or '(empty)'}"
+                )
+
+
+def render_coach_reflection_prompt_card():
+    with st.container(border=True):
+        st.markdown("**Coach Reflection Prompt**")
+        st.write(
+            "Reflect on what matters most to you right now, what risk you see, and what move you are considering next."
+        )
+
+
+def render_scenario_overview_cards(
+    scenario_title,
+    scenario_context,
+    conflict,
+    current_turn,
+    current_situation
+):
+    top_left, top_right = st.columns([2, 1])
+    with top_left:
+        render_text_card("Title", scenario_title)
+    with top_right:
+        render_text_card("Current Turn", str(current_turn))
+
+    render_text_card("Context", scenario_context)
+    render_text_card("Conflict", conflict)
+    render_text_card("Current Situation", current_situation)
+
+
+def render_ai_coach_context_cards(
+    *,
+    user_profile,
+    user_role,
+    current_turn,
+    private_role_brief,
+    current_situation,
+    recent_turn_history
+):
+    top_left, top_right = st.columns(2)
+    with top_left:
+        render_profile_card(user_profile, user_role)
+    with top_right:
+        render_current_turn_card(current_turn, user_role)
+
+    render_text_card("Private Role Brief", private_role_brief)
+    render_text_card("Current Situation", current_situation)
+    render_recent_progression_history_card(recent_turn_history)
+    render_coach_reflection_prompt_card()
+
+
+def is_ai_coach_context_prompt_message(content, hidden_ai_prompt_content=None):
+    normalized_content = normalize_app_text(content).strip()
+    normalized_hidden_prompt = normalize_app_text(hidden_ai_prompt_content).strip()
+
+    if normalized_hidden_prompt and normalized_content == normalized_hidden_prompt:
+        return True
+
+    return (
+        normalized_content.startswith("Turn ")
+        and "Current situation:" in normalized_content
+        and "Your private role brief:" in normalized_content
+        and "Reflect on what matters most to you right now" in normalized_content
+    )
+
+
+def render_ai_coach_messages(
+    message_container,
+    ai_messages,
+    submit_trace_id=None,
+    hidden_ai_prompt_content=None
+):
     should_log_render_details = (
         submit_trace_id is not None
         or should_show_ai_coach_debug()
@@ -112,14 +327,34 @@ def render_ai_coach_messages(message_container, ai_messages, submit_trace_id=Non
     )
 
     try:
+        skipped_prompt = False
+        visible_messages = []
+        for index, msg in enumerate(ai_messages):
+            sender = msg[0]
+            if (
+                not skipped_prompt
+                and sender == "ai"
+                and is_ai_coach_context_prompt_message(
+                    msg[1],
+                    hidden_ai_prompt_content=hidden_ai_prompt_content
+                )
+            ):
+                skipped_prompt = True
+                log_render_event(
+                    "render_ai_coach_messages_skipped_context_prompt",
+                    index=index
+                )
+                continue
+            visible_messages.append(msg)
+
         log_render_event("render_ai_coach_messages_before_container_context")
         with message_container.container():
-            if len(ai_messages) == 0:
+            if len(visible_messages) == 0:
                 log_render_event(
                     "render_ai_coach_messages_before_loop",
                     message_count=0
                 )
-                st.caption("No AI messages yet.")
+                st.caption("No AI chat replies yet. Start by sharing your reflection below.")
                 log_render_event(
                     "render_ai_coach_messages_after_loop",
                     rendered_message_count=0
@@ -127,9 +362,9 @@ def render_ai_coach_messages(message_container, ai_messages, submit_trace_id=Non
             else:
                 log_render_event(
                     "render_ai_coach_messages_before_loop",
-                    message_count=len(ai_messages)
+                    message_count=len(visible_messages)
                 )
-                for index, msg in enumerate(ai_messages):
+                for index, msg in enumerate(visible_messages):
                     sender = msg[0]
                     content = msg[1]
                     created_at = msg[2]
@@ -149,7 +384,7 @@ def render_ai_coach_messages(message_container, ai_messages, submit_trace_id=Non
 
                 log_render_event(
                     "render_ai_coach_messages_after_loop",
-                    rendered_message_count=len(ai_messages)
+                    rendered_message_count=len(visible_messages)
                 )
         log_render_event("render_ai_coach_messages_after_container_context")
     except Exception as exc:
@@ -367,6 +602,8 @@ if "ai_coach_force_reload" not in st.session_state:
 
 if "ai_coach_force_reload_context" not in st.session_state:
     st.session_state.ai_coach_force_reload_context = None
+
+inject_readability_styles()
 
 show_ai_coach_debug = should_show_ai_coach_debug()
 if (
@@ -760,11 +997,13 @@ else:
         current_turn = current_session["current_turn"]
         current_situation = current_session["current_situation"]
 
-        st.write("**Title:**", scenario_title)
-        st.write("**Context:**", scenario_context)
-        st.write("**Conflict:**", conflict)
-        st.write("**Current Turn:**", current_turn)
-        st.write("**Current Situation:**", current_situation)
+        render_scenario_overview_cards(
+            scenario_title=scenario_title,
+            scenario_context=scenario_context,
+            conflict=conflict,
+            current_turn=current_turn,
+            current_situation=current_situation
+        )
 
         user_role = get_user_role(session_id, st.session_state.user_id)
 
@@ -788,13 +1027,11 @@ else:
 
         user_role = get_user_role(session_id, st.session_state.user_id)
 
-        st.subheader("Your Role Brief")
+        private_role_brief = ""
         if user_role == "role_a":
-            st.info(role_a_brief)
-            st.write("Your role: A")
+            private_role_brief = role_a_brief
         elif user_role == "role_b":
-            st.info(role_b_brief)
-            st.write("Your role: B")
+            private_role_brief = role_b_brief
         else:
             st.warning("Your role has not been assigned yet.")
 
@@ -808,6 +1045,14 @@ else:
 
         st.markdown("---")
         st.subheader("AI Coach Chat")
+        render_ai_coach_context_cards(
+            user_profile=user_profile,
+            user_role=user_role,
+            current_turn=current_turn,
+            private_role_brief=private_role_brief,
+            current_situation=current_situation,
+            recent_turn_history=recent_turn_history
+        )
 
         # 第一次进入当前 stage 时，自动写入首条 AI prompt
         if user_role is not None and not has_ai_prompt_for_turn(
@@ -875,7 +1120,8 @@ else:
                 pending_submit_trace_id
                 if st.session_state.ai_coach_submit_in_progress
                 else None
-            )
+            ),
+            hidden_ai_prompt_content=turn_prompt
         )
         if st.session_state.ai_coach_submit_in_progress:
             log_ai_submit_event(
