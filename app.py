@@ -1,4 +1,4 @@
-from streamlit_autorefresh import st_autorefresh
+﻿from streamlit_autorefresh import st_autorefresh
 import streamlit as st
 import html
 import os
@@ -46,7 +46,10 @@ from database import (
     has_completed_turn,
     claim_pending_turn_actions_for_generation,
     complete_joint_turn,
-    get_turn_suggestion
+    get_turn_suggestion,
+    get_peer_feedback_for_session,
+    save_peer_feedback,
+    get_total_received_peer_feedback_points,
 )
 from scenario_library import (
     get_scenario_by_id,
@@ -310,6 +313,40 @@ def inject_active_session_dashboard_styles():
             font-size: 0.95rem;
             overflow-wrap: anywhere;
         }
+
+        .echorole-rating-question {
+            margin-bottom: 0.7rem;
+            color: #24324A;
+            line-height: 1.6;
+        }
+
+        .echorole-star-meter {
+            position: relative;
+            display: inline-block;
+            margin: 0.25rem 0 0.45rem 0;
+            font-size: 1.65rem;
+            line-height: 1;
+            letter-spacing: 0.12rem;
+        }
+
+        .echorole-star-meter-back {
+            color: #D7E6F7;
+        }
+
+        .echorole-star-meter-front {
+            position: absolute;
+            top: 0;
+            left: 0;
+            overflow: hidden;
+            white-space: nowrap;
+            color: #F59E0B;
+        }
+
+        .echorole-rating-meta {
+            color: #6B7280;
+            font-size: 0.98rem;
+            margin-top: 0.1rem;
+        }
         </style>
         """,
         unsafe_allow_html=True
@@ -358,7 +395,7 @@ def render_text_card(title, body, *, caption=None, empty_message="Not available 
             st.caption(empty_message)
 
 
-def render_profile_card(user_profile, user_role):
+def render_profile_card(user_profile, user_role, total_points=0):
     display_name = normalize_app_text(
         (user_profile or {}).get("display_name")
         or st.session_state.get("username")
@@ -371,6 +408,7 @@ def render_profile_card(user_profile, user_role):
         st.markdown("**Profile**")
         st.write(f"**Display name:** {display_name or 'Not set'}")
         st.write(f"**Role:** {get_role_display_name(user_role)}")
+        st.write(f"**Peer score:** {int(total_points or 0)} points")
         if mbti:
             st.write(f"**MBTI:** {mbti}")
         if priorities:
@@ -464,7 +502,7 @@ def render_recent_progression_history_card(recent_turn_history):
         for turn in recent_turn_history:
             with st.container(border=True):
                 st.write(
-                    f"**Turn {turn.get('turn_index', '?')} · {get_role_display_name(turn.get('role_name'))}**"
+                    f"**Turn {turn.get('turn_index', '?')} 路 {get_role_display_name(turn.get('role_name'))}**"
                 )
                 st.write(
                     f"**Action:** {normalize_app_text(turn.get('submitted_action')) or '(empty)'}"
@@ -557,6 +595,126 @@ def render_scenario_overview_cards(
             st.write(
                 f"**Current Situation:** {normalize_app_text(current_situation) or 'Not available yet.'}"
             )
+
+
+def get_other_room_member(members, current_user_id):
+    for member in members or []:
+        member_user_id = member[0] if len(member) > 0 else ""
+        if member_user_id and member_user_id != current_user_id:
+            return member
+    return None
+
+
+def render_star_rating_preview(star_rating):
+    numeric_rating = float(star_rating or 0)
+    if numeric_rating <= 0:
+        normalized_rating = 0.0
+    else:
+        normalized_rating = max(0.5, min(5.0, round(numeric_rating * 2) / 2))
+
+    fill_percent = normalized_rating / 5.0 * 100.0
+    points = int(round(normalized_rating * 10))
+    star_markup = "&#9733;&#9733;&#9733;&#9733;&#9733;"
+    meta_text = (
+        "Choose a rating from 0.5 to 5.0 stars."
+        if normalized_rating == 0
+        else f"{normalized_rating:.1f} stars - {points} points"
+    )
+
+    st.markdown(
+        f"""
+        <div class="echorole-star-meter" aria-hidden="true">
+            <div class="echorole-star-meter-back">{star_markup}</div>
+            <div class="echorole-star-meter-front" style="width: {fill_percent:.1f}%;">{star_markup}</div>
+        </div>
+        <div class="echorole-rating-meta">{meta_text}</div>
+        """
+        , unsafe_allow_html=True
+    )
+
+
+def render_peer_feedback_card(
+    *,
+    room_id,
+    session_id,
+    current_turn,
+    current_user_id,
+    other_member
+):
+    if current_turn < 3:
+        return
+
+    with st.container(border=True):
+        st.markdown("**Peer Feedback**")
+
+        if other_member is None:
+            st.caption("Peer feedback becomes available once another participant is present.")
+            return
+
+        rated_user_id = other_member[0] if len(other_member) > 0 else ""
+        rated_display_name = normalize_app_text(other_member[1] if len(other_member) > 1 else "") or rated_user_id
+        existing_feedback = get_peer_feedback_for_session(
+            session_id=session_id,
+            rater_user_id=current_user_id,
+            rated_user_id=rated_user_id
+        )
+
+        st.markdown(
+            """
+            <div class="echorole-rating-question">
+                How well did your partner handle this conversation?
+            </div>
+            """
+            , unsafe_allow_html=True
+        )
+        st.caption(f"Your feedback for: {rated_display_name}")
+
+        if existing_feedback is not None:
+            render_star_rating_preview(existing_feedback.get("star_rating", 5.0))
+            st.success("Feedback submitted.")
+            saved_comment = normalize_app_text(existing_feedback.get("comment"))
+            if saved_comment:
+                st.write("**Your private comment:**")
+                st.write(saved_comment)
+            return
+
+        rating_key = f"peer_feedback_rating_{session_id}_{current_user_id}_{rated_user_id}"
+        comment_key = f"peer_feedback_comment_{session_id}_{current_user_id}_{rated_user_id}"
+        submit_key = f"peer_feedback_submit_{session_id}_{current_user_id}_{rated_user_id}"
+
+        selected_rating = st.select_slider(
+            "Rating",
+            options=[0.0] + [value / 2 for value in range(1, 11)],
+            value=0.0,
+            key=rating_key,
+            format_func=lambda value: "Select rating" if value == 0 else f"{value:.1f} stars"
+        )
+        render_star_rating_preview(selected_rating)
+
+        comment_value = st.text_area(
+            "Private comment",
+            key=comment_key,
+            placeholder="Leave a private comment for your partner/opponent..."
+        )
+
+        if st.button("Submit Feedback", key=submit_key):
+            if float(selected_rating or 0) <= 0:
+                st.error("Please choose a rating before submitting.")
+                return
+
+            saved_feedback = save_peer_feedback(
+                room_id=room_id,
+                session_id=session_id,
+                rater_user_id=current_user_id,
+                rated_user_id=rated_user_id,
+                star_rating=selected_rating,
+                comment=comment_value
+            )
+            if saved_feedback is None:
+                st.error("Feedback could not be saved.")
+            else:
+                st.success("Feedback submitted.")
+                st.rerun()
 
 
 def render_ai_coach_context_cards(
@@ -947,7 +1105,7 @@ def flush_pending_ai_coach_state_update():
     st.session_state.last_ai_coach_debug = dict(pending_payload)
 
 
-# ---------- 1. 初始化 session_state ----------
+# ---------- 1. 鍒濆鍖?session_state ----------
 if "user_id" not in st.session_state:
     st.session_state.user_id = None
 
@@ -998,7 +1156,7 @@ if show_ai_coach_debug:
     )
 
 
-# ---------- 2. 从 URL 恢复用户身份 ----------
+# ---------- 2. 浠?URL 鎭㈠鐢ㄦ埛韬唤 ----------
 query_params = st.query_params
 
 if st.session_state.user_id is None and "user_id" in query_params:
@@ -1027,7 +1185,7 @@ if st.session_state.invite_code is None and "invite_code" in query_params:
 
 
 def save_user_to_url():
-    """把当前用户身份和房间信息写到 URL，刷新后还能保留"""
+    """鎶婂綋鍓嶇敤鎴疯韩浠藉拰鎴块棿淇℃伅鍐欏埌 URL锛屽埛鏂板悗杩樿兘淇濈暀"""
     if st.session_state.user_id:
         st.query_params["user_id"] = st.session_state.user_id
     if st.session_state.username:
@@ -1037,7 +1195,7 @@ def save_user_to_url():
 
 
 def clear_url():
-    """离开房间时清空 URL 参数"""
+    """绂诲紑鎴块棿鏃舵竻绌?URL 鍙傛暟"""
     st.query_params.clear()
 
 
@@ -1046,7 +1204,7 @@ def generate_invite_code(length=6):
 
 
 def ensure_user_created(username, mbti=None, priorities=None):
-    """只有第一次才创建 user_id"""
+    """鍙湁绗竴娆℃墠鍒涘缓 user_id"""
     if st.session_state.user_id is None:
         st.session_state.user_id = str(uuid.uuid4())
     st.session_state.username = username
@@ -1061,7 +1219,7 @@ def ensure_user_created(username, mbti=None, priorities=None):
 
 def get_current_stage_obj(current_session):
     """
-    current_session 是 database.py 里 get_session_by_room() 返回的 tuple:
+    current_session 鏄?database.py 閲?get_session_by_room() 杩斿洖鐨?tuple:
     [0]=id, [1]=room_id, [2]=scenario_title, [3]=scenario_context, [4]=conflict,
     [5]=role_a_brief, [6]=role_b_brief, [7]=stages_json, [8]=current_stage, [9]=created_at
     """
@@ -1092,48 +1250,49 @@ def get_stage_prompt_for_role(stage_obj, user_role):
 
 def generate_fake_ai_feedback(user_role, user_text, stage_index):
     """
-    这里先用假反馈，后面你可以替换成真正的 LLM / RAG 版本
+    Temporary fallback feedback used for local development.
     """
     if user_role == "role_a":
         if stage_index == 1:
             return (
-                "我理解你的判断逻辑。你现在把“压力训练”“标准传达”和“情绪表达”混在了一起。"
-                "从训练角度，建议你先区分：你真正想达成的是管理效果，还是即时情绪释放？"
-                "请继续说明：如果目标是长期团队稳定，你觉得你刚才的表达会带来哪些副作用？"
+                "I can see that you are trying to balance pressure, standards, and emotion at the same time. "
+                "Before reacting further, it may help to separate your immediate frustration from your longer-term goal in this relationship. "
+                "What outcome are you actually trying to create with your next move?"
             )
         elif stage_index == 2:
             return (
-                "你的重点不只是道歉本身，而是恢复对方对你判断系统的信任。"
-                "请继续说明：你的道歉里，哪些内容是修复情绪体验，哪些内容是重新建立清晰标准？"
+                "The issue may not be only what you say next, but whether the other person can trust how you are making decisions. "
+                "Which part of your next response is meant to repair the relationship, and which part is meant to clarify expectations?"
             )
         elif stage_index == 3:
             return (
-                "现在重点已经从补救转向稳定关系。"
-                "请继续说明：下次你会如何在前 30 秒内控制情绪噪声，同时把标准表达清楚？"
+                "The focus now is less about rescue and more about building a steadier pattern. "
+                "What would help you stay calm in the first 30 seconds while still being clear about your standard or boundary?"
             )
         else:
-            return "请继续展开你的判断。"
+            return "Please continue developing your reasoning."
 
     elif user_role == "role_b":
         if stage_index == 1:
             return (
-                "你已经表达出了受伤感和不公平感。下一步要把情绪判断和沟通策略拆开。"
-                "请继续说明：如果你希望被认真对待而不是升级冲突，你最想先澄清什么事实？"
+                "You have already expressed hurt and unfairness. "
+                "The next step may be to separate your emotional reaction from the communication strategy you want to use. "
+                "If you want to be taken seriously without escalating the conflict, what fact or need do you most want to clarify first?"
             )
         elif stage_index == 2:
             return (
-                "对方的道歉可能缓和情绪，但未必已经解决问题。"
-                "请继续说明：你最需要对方说清楚的是评价依据、沟通方式，还是之后的合作边界？"
+                "An apology may soften the emotion, but it does not always solve the underlying issue. "
+                "What matters more to you now: how they evaluated you, how they spoke to you, or what boundary should change going forward?"
             )
         elif stage_index == 3:
             return (
-                "边界不是一次强烈表态，而是持续一致的回应模式。"
-                "请继续说明：你希望用什么方式让对方知道，压迫式表达对你不起作用，但你仍愿意合作？"
+                "A boundary is usually not one dramatic statement but a consistent pattern of response. "
+                "How could you show that pressure-based communication does not work for you while still showing willingness to cooperate?"
             )
         else:
-            return "请继续说明你的想法。"
+            return "Please continue explaining your thinking."
 
-    return "请继续展开你的想法。"
+    return "Please continue sharing what you are thinking."
 
 
 def get_stage_count(current_session):
@@ -1147,7 +1306,7 @@ room_refresh_interval_ms = 10000
 room_refresh_enabled = False
 
 
-# ---------- 3. 大厅页 ----------
+# ---------- 3. 澶у巺椤?----------
 if st.session_state.room_id is None:
     render_app_header()
     st.write("Welcome to EchoRole!")
@@ -1240,11 +1399,14 @@ if st.session_state.room_id is None:
             else:
                 st.error("Invalid invite code")
 
-# ---------- 4. 房间页 ----------
+# ---------- 4. 鎴块棿椤?----------
 else:
     user_profile = get_user_profile(st.session_state.user_id)
+    current_user_total_points = get_total_received_peer_feedback_points(st.session_state.user_id)
     members = get_members_by_room(st.session_state.room_id)
     current_session = get_session_by_room(st.session_state.room_id)
+    refresh_members_clicked = False
+    leave_room_clicked = False
 
     if current_session is None:
         render_app_header()
@@ -1392,7 +1554,7 @@ else:
         )
 
         with left_col:
-            render_profile_card(user_profile, user_role)
+            render_profile_card(user_profile, user_role, total_points=current_user_total_points)
             render_profile_editor(user_profile)
             render_room_info_card(
                 invite_code=st.session_state.invite_code,
@@ -1407,13 +1569,22 @@ else:
                 current_turn=current_turn,
                 show_current_situation=False
             )
+            render_peer_feedback_card(
+                room_id=st.session_state.room_id,
+                session_id=session_id,
+                current_turn=current_turn,
+                current_user_id=st.session_state.user_id,
+                other_member=get_other_room_member(members, st.session_state.user_id)
+            )
+            refresh_members_clicked = st.button("Refresh Members")
+            leave_room_clicked = st.button("Leave Room")
 
         with middle_col:
             render_current_situation_feature_card(current_situation)
             st.subheader("AI Coach Chat")
             render_text_card("Private Role Brief", private_role_brief)
 
-        # 第一次进入当前 stage 时，自动写入首条 AI prompt
+        # 绗竴娆¤繘鍏ュ綋鍓?stage 鏃讹紝鑷姩鍐欏叆棣栨潯 AI prompt
         if user_role is not None and not has_ai_prompt_for_turn(
             session_id,
             current_turn,
@@ -2407,8 +2578,6 @@ else:
                         )
                         st.rerun()
 
-        if left_col.button("Refresh Members"):
-            st.rerun()
     else:
         st.markdown("---")
         st.subheader("Shared Role-play Chat")
@@ -2444,10 +2613,13 @@ else:
                     )
                     st.rerun()
 
-        if st.button("Refresh Members"):
-            st.rerun()
+        refresh_members_clicked = st.button("Refresh Members")
+        leave_room_clicked = st.button("Leave Room")
 
-    if st.button("Leave Room"):
+    if refresh_members_clicked:
+        st.rerun()
+
+    if leave_room_clicked:
         if st.session_state.user_id and st.session_state.room_id:
             remove_member(
                 st.session_state.user_id,
