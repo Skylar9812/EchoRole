@@ -100,6 +100,70 @@ def format_recent_turn_history(recent_turn_history):
     return "\n".join(history_lines)
 
 
+def format_recent_coach_history(recent_coach_history):
+    if not recent_coach_history:
+        return ""
+
+    history_lines = []
+    for message in recent_coach_history:
+        sender = str(message.get("sender") or "").strip().lower()
+        content = str(message.get("content") or "").strip()
+        if content == "":
+            continue
+
+        if sender == "ai":
+            speaker = "Coach"
+        elif sender == "user":
+            speaker = "User"
+        else:
+            speaker = sender or "Message"
+
+        turn_index = message.get("turn_index", "?")
+        history_lines.append(
+            f"Turn {turn_index} {speaker}: {content}"
+        )
+
+    return "\n".join(history_lines)
+
+
+def infer_latest_user_message_language(user_text):
+    text = str(user_text or "").strip()
+    if text == "":
+        return "mixed"
+
+    chinese_char_count = len(re.findall(r"[\u4e00-\u9fff]", text))
+    english_letter_count = len(re.findall(r"[A-Za-z]", text))
+
+    if chinese_char_count > english_letter_count:
+        return "zh"
+    if english_letter_count > chinese_char_count:
+        return "en"
+
+    return "mixed"
+
+
+def describe_latest_user_message_language(language_code):
+    if language_code == "zh":
+        return "Chinese"
+    if language_code == "en":
+        return "English"
+    return "Mixed; reply in the dominant language of the latest user message."
+
+
+def count_prior_visible_user_messages(recent_coach_history):
+    if not recent_coach_history:
+        return 0
+
+    visible_user_message_count = 0
+    for message in recent_coach_history:
+        sender = str(message.get("sender") or "").strip().lower()
+        content = str(message.get("content") or "").strip()
+        if sender == "user" and content != "":
+            visible_user_message_count += 1
+
+    return visible_user_message_count
+
+
 def format_rag_notes_for_prompt(rag_notes):
     if not rag_notes:
         return "No relevant local guidance notes retrieved."
@@ -255,6 +319,7 @@ class AIProvider:
         current_session=None,
         user_profile=None,
         recent_turn_history=None,
+        recent_coach_history=None,
         debug_trace_id=None
     ):
         raise NotImplementedError
@@ -652,25 +717,42 @@ def _build_llm_coach_feedback_messages(
     private_role_brief="",
     user_profile=None,
     recent_turn_history=None,
+    recent_coach_history=None,
     debug_trace_id=None
 ):
     role_label = get_role_label(user_role)
     profile_context = format_user_profile_context(user_profile) or "None provided."
+    latest_user_language = infer_latest_user_message_language(user_text)
+    latest_user_message_language = describe_latest_user_message_language(
+        latest_user_language
+    )
+    prior_visible_user_message_count = count_prior_visible_user_messages(
+        recent_coach_history
+    )
+    first_coach_reply = prior_visible_user_message_count == 0
+    prompt_mode = "first" if first_coach_reply else "follow_up"
     recent_history_context = format_recent_turn_history(recent_turn_history)
     if recent_history_context == "":
         recent_history_context = "No recent turn history available."
-    rag_query = build_coach_rag_query(
-        current_session=current_session,
-        user_role=user_role,
-        user_text=user_text,
-        user_profile=user_profile,
-        recent_turn_history=recent_turn_history
-    )
-    rag_notes = retrieve_relevant_notes(rag_query, top_k=4)
-    rag_notes_context = format_rag_notes_for_prompt(rag_notes)
+    coach_history_context = format_recent_coach_history(recent_coach_history)
+    if coach_history_context == "":
+        coach_history_context = "No recent coach conversation history available."
+    rag_notes = []
+    rag_notes_context = ""
+    if first_coach_reply:
+        rag_query = build_coach_rag_query(
+            current_session=current_session,
+            user_role=user_role,
+            user_text=user_text,
+            user_profile=user_profile,
+            recent_turn_history=recent_turn_history
+        )
+        rag_notes = retrieve_relevant_notes(rag_query, top_k=4)
+        rag_notes_context = format_rag_notes_for_prompt(rag_notes)
     _log_provider_event(
         "ai_coach_rag_context_built",
         debug_trace_id=debug_trace_id,
+        first_coach_reply=first_coach_reply,
         retrieved_note_count=len(rag_notes),
         retrieved_note_titles=[note.get("title") for note in rag_notes],
         retrieved_note_sources=[note.get("relative_path") for note in rag_notes]
@@ -686,11 +768,46 @@ def _build_llm_coach_feedback_messages(
         recent_turn_history=recent_turn_history
     )
 
+    first_prompt_style = (
+        "This is the first visible user message in the private coaching conversation. "
+        "Use the fuller structured coaching style, but keep it natural rather than rigid. "
+        "Do not make the first reply too short. Give enough substance to help the user understand the situation and choose a grounded next move.\n"
+        "For the first user message, the coach should normally cover these ideas naturally unless the user explicitly asks for a very narrow answer:\n"
+        "1. Objective situation: briefly analyze the observable facts of the scenario, separate what is known from what is assumed, and avoid mind-reading.\n"
+        "2. User feelings and expectations: help the user recognize what they may be feeling, hoping for, needing, or expecting. Use profile details, MBTI, and profile notes gently as context, not as a fixed diagnosis.\n"
+        "3. Perspective-taking: help the user consider how the other person may experience the same situation, but present this as possibility rather than certainty. The first reply should include at least some perspective-taking.\n"
+        "4. Methodology for action: offer one practical communication or decision-making method that fits the current situation. Keep theory light and applied.\n"
+        "5. Advice: end with one or two concrete next-step suggestions, and include example wording when useful."
+    )
+    follow_up_prompt_style = (
+        "This is an ongoing private coaching conversation. "
+        "Use Recent AI Coach conversation history to continue naturally from the previous exchange.\n"
+        "For follow-up messages:\n"
+        "- Do not restart the full first-message framework.\n"
+        "- Do not re-explain all objective facts unless the user introduces a new major issue.\n"
+        "- Do not repeat the same advice in a new format.\n"
+        "- Pick up from the user's latest response.\n"
+        "- Help the user clarify, refine, or take the next step.\n"
+        "- Keep the response shorter than the first reply unless the user asks for depth.\n"
+        "- End with one useful move, concrete suggestion, or reflective question.\n"
+        "- It is okay to focus mostly on one useful next move if that is what the conversation needs."
+    )
+    prompt_mode_instruction = (
+        first_prompt_style
+        if prompt_mode == "first"
+        else follow_up_prompt_style
+    )
+
     system_message = (
         "You are a supportive communication coach for a role-play decision-training tool. "
         "Your job is to help the user understand the current interpersonal situation, notice their own feelings and expectations, "
         "consider what the other person may be experiencing, and choose a grounded next move. "
-        "Use the retrieved knowledge notes only when relevant and only as background guidance. "
+        "The AI Coach Chat is a continuous conversation. Use recent coach conversation history to decide whether this is a first message or a follow-up. "
+        "If it is a follow-up, continue from what has already been discussed instead of restarting the full analysis. "
+        "Always reply in the same language as the latest user message. The latest user message language has priority over profile language, MBTI/profile notes language, prior coach history language, retrieved note language, and scenario text language. "
+        "If the latest user message is mixed-language, use the dominant language of that latest message. "
+        "Use retrieved knowledge notes only when relevant and only as background guidance. "
+        "Use retrieved knowledge notes only for the first coach reply in a conversation. For follow-up replies, rely on the existing coach conversation history instead of reintroducing retrieved notes. "
         "Do not force a fixed framework. Do not overuse repetitive coaching formulas. Do not always ask the same three questions. "
         "Do not diagnose. Do not moralize. Do not claim to know what the other person truly thinks. "
         "Be practical, emotionally aware, and specific to the current scenario. "
@@ -709,16 +826,16 @@ def _build_llm_coach_feedback_messages(
         f"Current situation: {current_situation}\n"
         f"User profile: {profile_context}\n"
         f"Recent turn history:\n{recent_history_context}\n\n"
-        f"Retrieved local guidance notes:\n{rag_notes_context}\n\n"
-        f"Recent reflection:\n{user_text.strip()}\n\n"
+        f"Recent AI Coach conversation history:\n{coach_history_context}\n\n"
+        f"First coach reply: {first_coach_reply}\n"
+        f"AI Coach prompt mode: {prompt_mode}\n"
+        f"Prior visible user message count: {prior_visible_user_message_count}\n"
+        f"Latest user message dominant language: {latest_user_message_language}\n"
+        f"Latest user message:\n{user_text.strip()}\n\n"
         f"Tone reference from the deterministic local coach (do not copy its structure verbatim):\n{local_style_anchor}\n\n"
         "Write one natural coaching response in plain text.\n"
-        "The response should usually cover these ideas naturally, not as a rigid numbered template unless that clearly helps:\n"
-        "1. Objective situation: briefly identify the observable facts of the scenario, separate what is known from what is assumed, and avoid mind-reading.\n"
-        "2. User feelings and expectations: help the user notice what they may be feeling, hoping for, needing, or expecting. Use profile details, MBTI, and profile notes gently as context, not as a fixed diagnosis.\n"
-        "3. Perspective-taking: help the user consider how the other person may be experiencing the situation, but present that as a possibility rather than certainty.\n"
-        "4. Methodology for action: offer a practical communication or decision-making method that fits the current situation. Theory may come from communication skills, psychology, behavioral science, negotiation, workplace communication, or relationship skills, but keep it light and applied.\n"
-        "5. Advice: end with one or two concrete next-step suggestions, and include example wording when useful.\n"
+        "Reply in the same language as the latest user message shown above. Do not switch languages because the profile, prior conversation, scenario text, or retrieved notes use another language.\n"
+        f"{prompt_mode_instruction}\n"
         "Additional requirements:\n"
         "- Normalize the user's feelings when appropriate without sounding clinical.\n"
         "- Keep the response specific to the scenario, role, turn, current situation, and latest message.\n"
@@ -728,6 +845,9 @@ def _build_llm_coach_feedback_messages(
         "- Keep the response concise, warm, grounded, and practical."
     )
 
+    if first_coach_reply:
+        user_message += f"\nRetrieved local guidance notes:\n{rag_notes_context}\n"
+
     messages = [
         {"role": "system", "content": system_message},
         {"role": "user", "content": user_message}
@@ -736,6 +856,10 @@ def _build_llm_coach_feedback_messages(
     return {
         "messages": messages,
         "rag_note_count": len(rag_notes),
+        "ai_coach_history_message_count": len(recent_coach_history or []),
+        "first_coach_reply": first_coach_reply,
+        "ai_coach_prompt_mode": prompt_mode,
+        "latest_user_language": latest_user_language,
         "profile_included": profile_context != "None provided.",
         "prompt_text": prompt_text,
     }
@@ -1319,6 +1443,7 @@ class LocalDeterministicAIProvider(AIProvider):
         current_session=None,
         user_profile=None,
         recent_turn_history=None,
+        recent_coach_history=None,
         debug_trace_id=None
     ):
         feedback = _generate_dynamic_ai_feedback_local(
@@ -1540,6 +1665,7 @@ class DeepSeekOpenAICompatibleProvider(AIProvider):
         current_session=None,
         user_profile=None,
         recent_turn_history=None,
+        recent_coach_history=None,
         debug_trace_id=None
     ):
         fallback_feedback = self.fallback_provider.generate_dynamic_ai_feedback(
@@ -1550,6 +1676,7 @@ class DeepSeekOpenAICompatibleProvider(AIProvider):
             current_session=current_session,
             user_profile=user_profile,
             recent_turn_history=recent_turn_history,
+            recent_coach_history=recent_coach_history,
             debug_trace_id=debug_trace_id
         )
         timeout_seconds = self.config.resolved_llm_timeout_seconds()
@@ -1627,6 +1754,7 @@ class DeepSeekOpenAICompatibleProvider(AIProvider):
             private_role_brief=get_role_brief(current_session or {}, user_role),
             user_profile=user_profile,
             recent_turn_history=recent_turn_history,
+            recent_coach_history=recent_coach_history,
             debug_trace_id=debug_trace_id
         )
         payload = {
@@ -1651,6 +1779,22 @@ class DeepSeekOpenAICompatibleProvider(AIProvider):
                 prompt_length=len(prompt_text),
                 profile_included=bool(coach_prompt_bundle.get("profile_included")),
                 rag_note_count=coach_prompt_bundle.get("rag_note_count", 0),
+                ai_coach_history_message_count=coach_prompt_bundle.get(
+                    "ai_coach_history_message_count",
+                    0
+                ),
+                first_coach_reply=coach_prompt_bundle.get(
+                    "first_coach_reply",
+                    False
+                ),
+                ai_coach_prompt_mode=coach_prompt_bundle.get(
+                    "ai_coach_prompt_mode",
+                    "unknown"
+                ),
+                latest_user_language=coach_prompt_bundle.get(
+                    "latest_user_language",
+                    "unknown"
+                ),
                 prompt_preview=_short_debug_text(prompt_text, 1000)
             )
             try:
@@ -2079,6 +2223,7 @@ def generate_dynamic_ai_feedback(
     current_session=None,
     user_profile=None,
     recent_turn_history=None,
+    recent_coach_history=None,
     debug_trace_id=None
 ):
     return get_active_ai_provider().generate_dynamic_ai_feedback(
@@ -2089,6 +2234,7 @@ def generate_dynamic_ai_feedback(
         current_session=current_session,
         user_profile=user_profile,
         recent_turn_history=recent_turn_history,
+        recent_coach_history=recent_coach_history,
         debug_trace_id=debug_trace_id
     )
 

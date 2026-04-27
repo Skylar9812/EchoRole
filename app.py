@@ -34,6 +34,7 @@ from database import (
     get_all_roles_in_session,
     add_ai_message,
     get_ai_messages,
+    get_recent_ai_messages_for_user,
     has_ai_prompt_for_turn,
     get_turn_history,
     save_pending_turn_action,
@@ -447,6 +448,47 @@ def render_ai_coach_messages(
         raise
 
     log_render_event("render_ai_coach_messages_exited")
+
+
+def get_visible_ai_coach_history_entries(
+    ai_messages,
+    *,
+    hidden_ai_prompt_content=None,
+    limit=8
+):
+    visible_messages = []
+
+    for msg in ai_messages:
+        if len(msg) < 4:
+            continue
+
+        turn_index = msg[0]
+        sender = msg[2]
+        content = msg[3]
+        created_at = msg[4]
+
+        if (
+            sender == "ai"
+            and is_ai_coach_context_prompt_message(
+                content,
+                hidden_ai_prompt_content=hidden_ai_prompt_content
+            )
+        ):
+            continue
+
+        visible_messages.append(
+            {
+                "turn_index": turn_index,
+                "sender": sender,
+                "content": normalize_app_text(content),
+                "created_at": created_at,
+            }
+        )
+
+    if limit <= 0:
+        return visible_messages
+
+    return visible_messages[-limit:]
 
 
 def get_visible_ai_coach_debug(session_id, user_id, current_turn):
@@ -1148,6 +1190,16 @@ else:
             user_profile=user_profile,
             recent_turn_history=recent_turn_history
         )
+        raw_recent_ai_coach_history = get_recent_ai_messages_for_user(
+            session_id=session_id,
+            user_id=st.session_state.user_id,
+            limit=16
+        )
+        recent_ai_coach_history = get_visible_ai_coach_history_entries(
+            raw_recent_ai_coach_history,
+            hidden_ai_prompt_content=turn_prompt,
+            limit=8
+        )
 
         st.markdown("---")
         st.subheader("AI Coach Chat")
@@ -1399,6 +1451,16 @@ else:
                                     )
                                 )
                             )
+                            log_ai_submit_event(
+                                "ai_coach_history_loaded_for_submit",
+                                submit_trace_id=submit_trace_id,
+                                ai_coach_history_message_count=len(recent_ai_coach_history),
+                                latest_history_sender=(
+                                    recent_ai_coach_history[-1]["sender"]
+                                    if recent_ai_coach_history
+                                    else ""
+                                )
+                            )
                             ai_feedback = generate_dynamic_ai_feedback(
                                 user_role=user_role,
                                 user_text=ai_input_value,
@@ -1407,6 +1469,7 @@ else:
                                 current_session=current_session,
                                 user_profile=latest_user_profile,
                                 recent_turn_history=recent_turn_history,
+                                recent_coach_history=recent_ai_coach_history,
                                 debug_trace_id=submit_trace_id
                             )
                             log_ai_submit_event(

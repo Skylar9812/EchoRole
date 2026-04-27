@@ -1194,6 +1194,32 @@ def get_ai_messages(session_id, turn_index, user_id):
     return rows
 
 
+def get_recent_ai_messages_for_user(session_id, user_id, limit=12):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT
+            stage_index,
+            role_name,
+            sender,
+            content,
+            created_at
+        FROM ai_messages
+        WHERE session_id = ? AND user_id = ? AND sender IN ('user', 'ai')
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (session_id, user_id, limit)
+    )
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    return list(reversed(rows))
+
+
 def has_ai_prompt_for_turn(session_id, turn_index, user_id):
     conn = get_connection()
     cursor = conn.cursor()
