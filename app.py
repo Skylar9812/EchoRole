@@ -1,5 +1,6 @@
 from streamlit_autorefresh import st_autorefresh
 import streamlit as st
+import html
 import os
 import re
 import uuid
@@ -53,6 +54,11 @@ from scenario_library import (
     get_scenarios_by_category,
 )
 
+st.set_page_config(
+    page_title="EchoRole",
+    layout="wide"
+)
+
 init_db()
 
 _pending_ai_coach_state_updates = {}
@@ -102,6 +108,11 @@ def inject_readability_styles():
     st.markdown(
         """
         <style>
+        .block-container {
+            padding-top: 1.15rem;
+            padding-bottom: 2rem;
+        }
+
         .stApp {
             font-size: 1.08rem;
         }
@@ -172,6 +183,133 @@ def inject_readability_styles():
         .stApp [data-testid="stVerticalBlock"] > div {
             gap: 0.45rem;
         }
+
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+
+
+def inject_active_session_dashboard_styles():
+    st.markdown(
+        """
+        <style>
+        .stApp {
+            background: #F6FAFF;
+            color: #1F2937;
+        }
+
+        .block-container {
+            max-width: 96vw !important;
+            width: 96vw !important;
+            padding-left: 2rem !important;
+            padding-right: 2rem !important;
+            padding-top: 1.25rem !important;
+            padding-bottom: 2.2rem !important;
+            margin: 0 auto;
+        }
+
+        .stApp [data-testid="stVerticalBlockBorderWrapper"] {
+            border-radius: 18px;
+            border: 1px solid #D7E6F7;
+            background: #FFFFFF;
+            box-shadow: 0 8px 24px rgba(15, 23, 42, 0.05);
+        }
+
+        .stApp [data-testid="stVerticalBlockBorderWrapper"] > div {
+            padding-top: 0.35rem;
+            padding-bottom: 0.2rem;
+        }
+
+        .stApp [data-testid="column"] > div {
+            gap: 1.35rem;
+        }
+
+        .stApp p,
+        .stApp li,
+        .stApp label,
+        .stApp h1,
+        .stApp h2,
+        .stApp h3,
+        .stApp h4,
+        .stApp div[data-testid="stMarkdownContainer"] p,
+        .stApp div[data-testid="stMarkdownContainer"] li {
+            word-break: normal;
+            overflow-wrap: normal;
+            white-space: normal;
+        }
+
+        .echorole-app-header {
+            margin: 0 0 1.7rem 0;
+            padding: 0.1rem 0 0.55rem 0;
+        }
+
+        .echorole-header-badge {
+            display: inline-block;
+            margin-bottom: 0.5rem;
+            padding: 0.28rem 0.65rem;
+            border-radius: 999px;
+            background: #EAF4FF;
+            color: #3B82F6;
+            font-size: 0.82rem;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+            text-transform: uppercase;
+        }
+
+        .echorole-app-header h1 {
+            margin: 0;
+            color: #1F2A44;
+            letter-spacing: -0.03em;
+            font-size: 3rem;
+            line-height: 1.05;
+        }
+
+        .echorole-app-subtitle {
+            margin-top: 0.35rem;
+            color: #6B7280;
+            font-size: 1.04rem;
+        }
+
+        .echorole-header-accent {
+            width: 120px;
+            height: 4px;
+            margin-top: 0.85rem;
+            border-radius: 999px;
+            background: linear-gradient(90deg, #3B82F6 0%, #CFE4FF 100%);
+        }
+
+        .echorole-situation-card {
+            margin-bottom: 1.15rem;
+            padding: 1.45rem 1.55rem;
+            border: 1px solid #D7E6F7;
+            border-left: 6px solid #3B82F6;
+            border-radius: 18px;
+            background: linear-gradient(135deg, #EAF4FF 0%, #F8FBFF 100%);
+            box-shadow: 0 8px 24px rgba(15, 23, 42, 0.05);
+        }
+
+        .echorole-situation-title {
+            margin-bottom: 0.45rem;
+            color: #24324A;
+            font-size: 0.98rem;
+            font-weight: 700;
+            letter-spacing: 0.01em;
+            text-transform: uppercase;
+        }
+
+        .echorole-situation-body {
+            color: #334155;
+            font-size: 1.16rem;
+            line-height: 1.7;
+        }
+
+        .echorole-meta-id {
+            margin-top: 0.35rem;
+            color: #6B7280;
+            font-size: 0.95rem;
+            overflow-wrap: anywhere;
+        }
         </style>
         """,
         unsafe_allow_html=True
@@ -186,6 +324,26 @@ def get_role_display_name(role_name):
     if role_name == "joint":
         return "Joint Turn"
     return "Unassigned"
+
+
+def render_app_header(*, dashboard=False):
+    if not dashboard:
+        st.title("EchoRole")
+        return
+
+    st.markdown(
+        """
+        <div class="echorole-app-header">
+            <div class="echorole-header-badge">Active Session</div>
+            <h1>EchoRole</h1>
+            <div class="echorole-app-subtitle">
+                Role-play decision training for difficult conversations
+            </div>
+            <div class="echorole-header-accent"></div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
 
 def render_text_card(title, body, *, caption=None, empty_message="Not available yet."):
@@ -219,6 +377,74 @@ def render_profile_card(user_profile, user_role):
             st.write(f"**Profile context:** {priorities}")
         if not mbti and not priorities:
             st.caption("No additional profile context yet.")
+
+
+def render_room_info_card(invite_code, username, user_id):
+    with st.container(border=True):
+        st.markdown("**Room Information**")
+        st.write(f"**Room code:** {normalize_app_text(invite_code) or '(missing)'}")
+        st.write(f"**Signed in as:** {normalize_app_text(username) or '(missing)'}")
+        normalized_user_id = normalize_app_text(user_id) or "(missing)"
+        st.markdown(
+            f'<div class="echorole-meta-id">User ID: {html.escape(normalized_user_id)}</div>',
+            unsafe_allow_html=True
+        )
+
+
+def render_members_card(members):
+    with st.container(border=True):
+        st.markdown("**Members in this Room**")
+        if not members:
+            st.caption("No members in this room yet.")
+            return
+
+        for index, member in enumerate(members, start=1):
+            user_id = normalize_app_text(member[0] if len(member) > 0 else "")
+            nickname = normalize_app_text(member[1] if len(member) > 1 else "")
+            label = nickname or user_id or "(unknown member)"
+            st.write(f"**Member {index}:** {label}")
+
+
+def render_profile_editor(user_profile):
+    with st.expander("Edit Profile"):
+        with st.form("profile_form"):
+            profile_display_name = st.text_input(
+                "Display name",
+                value=user_profile.get("display_name") or st.session_state.username
+            )
+            profile_mbti = st.text_input(
+                "MBTI",
+                value=user_profile.get("mbti", "")
+            )
+            profile_priorities = st.text_area(
+                "Communication / value priorities",
+                value=user_profile.get("priorities", "")
+            )
+            profile_submitted = st.form_submit_button("Save Profile")
+
+            if profile_submitted:
+                profile_display_name_value = (profile_display_name or "").strip()
+                profile_mbti_value = (profile_mbti or "").strip()
+                profile_priorities_value = (profile_priorities or "").strip()
+
+                if profile_display_name_value == "":
+                    st.error("Display name cannot be empty.")
+                else:
+                    st.session_state.username = profile_display_name_value
+                    save_user_profile(
+                        st.session_state.user_id,
+                        display_name=profile_display_name_value,
+                        mbti=profile_mbti_value,
+                        priorities=profile_priorities_value
+                    )
+                    add_member(
+                        st.session_state.user_id,
+                        st.session_state.room_id,
+                        st.session_state.username
+                    )
+                    save_user_to_url()
+                    st.success("Profile saved.")
+                    st.rerun()
 
 
 def render_current_turn_card(current_turn, user_role):
@@ -296,41 +522,49 @@ def render_coach_reflection_prompt_card():
         )
 
 
+def render_current_situation_feature_card(current_situation):
+    body = normalize_app_text(current_situation).strip()
+    if body == "":
+        body = "Current situation is not available yet."
+
+    st.markdown(
+        f"""
+        <div class="echorole-situation-card">
+            <div class="echorole-situation-title">Current Situation</div>
+            <div class="echorole-situation-body">{html.escape(body).replace(chr(10), "<br>")}</div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+
 def render_scenario_overview_cards(
     scenario_title,
     scenario_context,
     conflict,
     current_turn,
-    current_situation
+    current_situation=None,
+    *,
+    show_current_situation=True
 ):
-    top_left, top_right = st.columns([2, 1])
-    with top_left:
-        render_text_card("Title", scenario_title)
-    with top_right:
-        render_text_card("Current Turn", str(current_turn))
-
-    render_text_card("Context", scenario_context)
-    render_text_card("Conflict", conflict)
-    render_text_card("Current Situation", current_situation)
+    with st.container(border=True):
+        st.markdown("**Scenario Overview**")
+        st.write(f"**Title:** {normalize_app_text(scenario_title) or 'Not available yet.'}")
+        st.write(f"**Current Turn:** {current_turn}")
+        st.write(f"**Context:** {normalize_app_text(scenario_context) or 'Not available yet.'}")
+        st.write(f"**Conflict:** {normalize_app_text(conflict) or 'Not available yet.'}")
+        if show_current_situation:
+            st.write(
+                f"**Current Situation:** {normalize_app_text(current_situation) or 'Not available yet.'}"
+            )
 
 
 def render_ai_coach_context_cards(
     *,
-    user_profile,
-    user_role,
-    current_turn,
     private_role_brief,
-    current_situation,
     recent_turn_history
 ):
-    top_left, top_right = st.columns(2)
-    with top_left:
-        render_profile_card(user_profile, user_role)
-    with top_right:
-        render_current_turn_card(current_turn, user_role)
-
     render_text_card("Private Role Brief", private_role_brief)
-    render_text_card("Current Situation", current_situation)
     render_recent_progression_history_card(recent_turn_history)
     render_coach_reflection_prompt_card()
 
@@ -909,13 +1143,13 @@ def get_stage_count(current_session):
     return len(current_session.get("stages", []))
 
 
-st.title("EchoRole")
 room_refresh_interval_ms = 10000
 room_refresh_enabled = False
 
 
 # ---------- 3. 大厅页 ----------
 if st.session_state.room_id is None:
+    render_app_header()
     st.write("Welcome to EchoRole!")
 
     username_input = st.text_input(
@@ -1008,77 +1242,38 @@ if st.session_state.room_id is None:
 
 # ---------- 4. 房间页 ----------
 else:
-    st.success("You are in a room now!")
-
-    st.write("Room code:")
-    st.code(st.session_state.invite_code)
-
-    st.write("Your username:")
-    st.code(st.session_state.username)
-
-    st.write("Your user ID:")
-    st.code(st.session_state.user_id)
-
     user_profile = get_user_profile(st.session_state.user_id)
-
-    with st.expander("Your Profile"):
-        with st.form("profile_form"):
-            profile_display_name = st.text_input(
-                "Display name",
-                value=user_profile.get("display_name") or st.session_state.username
-            )
-            profile_mbti = st.text_input(
-                "MBTI",
-                value=user_profile.get("mbti", "")
-            )
-            profile_priorities = st.text_area(
-                "Communication / value priorities",
-                value=user_profile.get("priorities", "")
-            )
-            profile_submitted = st.form_submit_button("Save Profile")
-
-            if profile_submitted:
-                profile_display_name_value = (profile_display_name or "").strip()
-                profile_mbti_value = (profile_mbti or "").strip()
-                profile_priorities_value = (profile_priorities or "").strip()
-
-                if profile_display_name_value == "":
-                    st.error("Display name cannot be empty.")
-                else:
-                    st.session_state.username = profile_display_name_value
-                    save_user_profile(
-                        st.session_state.user_id,
-                        display_name=profile_display_name_value,
-                        mbti=profile_mbti_value,
-                        priorities=profile_priorities_value
-                    )
-                    add_member(
-                        st.session_state.user_id,
-                        st.session_state.room_id,
-                        st.session_state.username
-                    )
-                    save_user_to_url()
-                    st.success("Profile saved.")
-                    st.rerun()
-
-    st.subheader("Members in this room")
     members = get_members_by_room(st.session_state.room_id)
-
-    for i, member in enumerate(members, start=1):
-        user_id = member[0]
-        nickname = member[1]
-
-        if (nickname or "").strip() != "":
-            st.write(f"Member {i}: {nickname}")
-        else:
-            st.write(f"Member {i}: {user_id}")
-
-    st.markdown("---")
-    st.subheader("Scenario")
-
     current_session = get_session_by_room(st.session_state.room_id)
 
     if current_session is None:
+        render_app_header()
+        st.success("You are in a room now!")
+
+        st.write("Room code:")
+        st.code(st.session_state.invite_code)
+
+        st.write("Your username:")
+        st.code(st.session_state.username)
+
+        st.write("Your user ID:")
+        st.code(st.session_state.user_id)
+
+        render_profile_editor(user_profile)
+
+        st.subheader("Members in this room")
+        for i, member in enumerate(members, start=1):
+            user_id = member[0]
+            nickname = member[1]
+
+            if (nickname or "").strip() != "":
+                st.write(f"Member {i}: {nickname}")
+            else:
+                st.write(f"Member {i}: {user_id}")
+
+        st.markdown("---")
+        st.subheader("Scenario")
+
         scenario_categories = get_scenario_categories()
         selected_category = st.selectbox(
             "Scenario category",
@@ -1125,6 +1320,8 @@ else:
                 st.rerun()
 
     else:
+        inject_active_session_dashboard_styles()
+        render_app_header(dashboard=True)
         session_id = current_session["id"]
         scenario_title = current_session["title"]
         scenario_context = current_session["context"]
@@ -1133,14 +1330,7 @@ else:
         role_b_brief = current_session["role_b_brief"]
         current_turn = current_session["current_turn"]
         current_situation = current_session["current_situation"]
-
-        render_scenario_overview_cards(
-            scenario_title=scenario_title,
-            scenario_context=scenario_context,
-            conflict=conflict,
-            current_turn=current_turn,
-            current_situation=current_situation
-        )
+        left_col, middle_col, right_col = st.columns([1.15, 2.15, 1.35], gap="large")
 
         user_role = get_user_role(session_id, st.session_state.user_id)
 
@@ -1201,16 +1391,27 @@ else:
             limit=8
         )
 
-        st.markdown("---")
-        st.subheader("AI Coach Chat")
-        render_ai_coach_context_cards(
-            user_profile=user_profile,
-            user_role=user_role,
-            current_turn=current_turn,
-            private_role_brief=private_role_brief,
-            current_situation=current_situation,
-            recent_turn_history=recent_turn_history
-        )
+        with left_col:
+            render_profile_card(user_profile, user_role)
+            render_profile_editor(user_profile)
+            render_room_info_card(
+                invite_code=st.session_state.invite_code,
+                username=st.session_state.username,
+                user_id=st.session_state.user_id
+            )
+            render_members_card(members)
+            render_scenario_overview_cards(
+                scenario_title=scenario_title,
+                scenario_context=scenario_context,
+                conflict=conflict,
+                current_turn=current_turn,
+                show_current_situation=False
+            )
+
+        with middle_col:
+            render_current_situation_feature_card(current_situation)
+            st.subheader("AI Coach Chat")
+            render_text_card("Private Role Brief", private_role_brief)
 
         # 第一次进入当前 stage 时，自动写入首条 AI prompt
         if user_role is not None and not has_ai_prompt_for_turn(
@@ -1235,7 +1436,7 @@ else:
             turn_index=current_turn,
             user_id=st.session_state.user_id
         )
-        ai_messages_container = st.empty()
+        ai_messages_container = middle_col.empty()
         pending_submit_trace_id = (
             (st.session_state.get("last_ai_coach_debug") or {}).get("submit_trace_id")
         )
@@ -1299,7 +1500,7 @@ else:
                 )
 
         if show_ai_coach_debug and ai_coach_debug is not None:
-            with st.expander("Coach Reply Debug", expanded=False):
+            with middle_col.expander("Coach Reply Debug", expanded=False):
                 st.caption(f"Submit stage: {ai_coach_debug.get('pipeline_stage', '(unknown)')}")
                 st.caption(f"Submit in progress: {st.session_state.ai_coach_submit_in_progress}")
                 st.caption(f"Submit trace id: {ai_coach_debug.get('submit_trace_id', '(unknown)')}")
@@ -1325,7 +1526,7 @@ else:
                 if ai_coach_debug.get("pipeline_error"):
                     st.caption(f"Pipeline error: {ai_coach_debug.get('pipeline_error')}")
 
-        with st.form("ai_chat_form", clear_on_submit=True):
+        with middle_col.form("ai_chat_form", clear_on_submit=True):
             ai_input = st.text_area("Reply to AI")
             ai_submit = st.form_submit_button(
                 "Send to AI",
@@ -1430,7 +1631,7 @@ else:
                                 "before_entering_spinner",
                                 submit_trace_id=submit_trace_id
                             )
-                            thinking_status = st.empty()
+                            thinking_status = middle_col.empty()
                             thinking_status.caption("AI Coach is thinking...")
                             log_ai_submit_event(
                                 "after_entering_spinner",
@@ -1774,7 +1975,12 @@ else:
                         )
                         st.session_state.ai_coach_submit_in_progress = False
 
-        render_ai_suggestion_card(current_user_turn_suggestion)
+        with middle_col:
+            render_coach_reflection_prompt_card()
+            render_recent_progression_history_card(recent_turn_history)
+
+        with right_col:
+            render_ai_suggestion_card(current_user_turn_suggestion)
         if current_user_turn_suggestion:
             log_turn_action_event(
                 "ai_suggestion_rendered_for_current_user",
@@ -1783,8 +1989,6 @@ else:
                 role_name=user_role
             )
 
-        st.subheader("Submit Turn Action")
-        st.caption("Use one concrete action to push the shared story into the next turn.")
         active_pending_actions = get_pending_turn_actions_for_session_turn(session_id, current_turn)
         current_user_pending_action = get_pending_turn_action_for_user(
             session_id,
@@ -1822,383 +2026,426 @@ else:
             force=should_show_ai_coach_debug()
         )
 
-        with st.container(border=True):
-            st.markdown("**Turn Submission Status**")
-            st.write(
-                f"**You:** {'Submitted' if current_user_pending_action is not None else 'Not yet submitted'}"
-            )
-            st.write(
-                f"**Other participant:** {'Submitted' if other_participant_submitted else 'Waiting'}"
-            )
-            if current_user_pending_action is not None:
-                st.write(
-                    f"**Your submitted action:** {normalize_app_text(current_user_pending_action.get('action_text'))}"
-                )
-            if other_pending_action is not None:
-                st.write("**Other participant's action:**")
-                with st.container(border=True):
-                    st.write(normalize_app_text(other_pending_action.get("action_text")))
+        with right_col.container(border=True):
+            st.subheader("Submit Turn Action")
+            st.caption("Use one concrete action to push the shared story into the next turn.")
 
-        if current_user_pending_action is not None:
-            log_turn_action_event(
-                "pending_turn_action_current_user_already_submitted",
-                session_id=session_id,
-                turn_index=current_turn,
-                status=current_user_pending_action.get("status")
-            )
-            if current_user_pending_action.get("status") == "generating" or other_participant_submitted:
-                st.info("Your action has been submitted. Waiting for the story to advance.")
-            else:
-                st.info("Your action has been submitted. Waiting for the other participant.")
-        elif other_pending_action is not None:
-            log_turn_action_event(
-                "pending_turn_action_other_action_visible",
-                session_id=session_id,
-                turn_index=current_turn,
-                other_role_name=other_pending_action.get("role_name"),
-                other_action_preview=short_debug_preview(other_pending_action.get("action_text"))
-            )
-            log_turn_action_event(
-                "pending_turn_action_current_user_can_respond",
-                session_id=session_id,
-                turn_index=current_turn,
-                other_role_name=other_pending_action.get("role_name")
-            )
-            st.info("The other participant has already acted this turn:")
             with st.container(border=True):
-                st.write(normalize_app_text(other_pending_action.get("action_text")))
-            st.caption("Now choose how your character responds.")
-        else:
-            st.caption("The story advances only after both participants submit valid actions for this turn.")
+                with st.form("turn_action_form", clear_on_submit=True):
+                    action_input = st.text_area(
+                        "What action do you want to take next?",
+                        disabled=current_user_pending_action is not None
+                    )
+                    action_submit = st.form_submit_button(
+                        "Submit Action and Advance Turn",
+                        disabled=current_user_pending_action is not None
+                    )
 
-        with st.form("turn_action_form", clear_on_submit=True):
-            action_input = st.text_area(
-                "What action do you want to take next?",
-                disabled=current_user_pending_action is not None
-            )
-            action_submit = st.form_submit_button(
-                "Submit Action and Advance Turn",
-                disabled=current_user_pending_action is not None
-            )
+                    if action_submit:
+                        turn_action_trace_id = str(uuid.uuid4())[:8]
+                        action_input_value = (action_input or "").strip()
+                        submit_user_id = st.session_state.user_id
+                        submit_room_id = st.session_state.room_id
+                        log_turn_action_event(
+                            "submit_turn_action_started",
+                            submit_trace_id=turn_action_trace_id,
+                            session_id=session_id,
+                            turn_index=current_turn,
+                            user_id=submit_user_id,
+                            role_name=user_role,
+                            action_length=len(action_input_value)
+                        )
 
-            if action_submit:
-                turn_action_trace_id = str(uuid.uuid4())[:8]
-                action_input_value = (action_input or "").strip()
-                submit_user_id = st.session_state.user_id
-                submit_room_id = st.session_state.room_id
+                        if action_input_value == "":
+                            st.error("Action cannot be empty.")
+                        else:
+                            recent_turn_history = get_turn_history(session_id)[-3:]
+                            log_turn_action_event(
+                                "submit_turn_action_local_validation_started",
+                                submit_trace_id=turn_action_trace_id,
+                                session_id=session_id,
+                                turn_index=current_turn,
+                                history_count=len(recent_turn_history)
+                            )
+                            validation = validate_turn_action(
+                                action_text=action_input_value,
+                                current_session=current_session,
+                                user_role=user_role
+                            )
+
+                            if not validation["is_valid"]:
+                                feedback_message = normalize_app_text(validation.get("feedback"))
+                                log_turn_action_event(
+                                    "submit_turn_action_local_validation_rejected",
+                                    submit_trace_id=turn_action_trace_id,
+                                    reason=short_debug_preview(feedback_message)
+                                )
+                                if feedback_message:
+                                    add_ai_message_with_logging(
+                                        branch_name="validation_feedback_save",
+                                        session_id=session_id,
+                                        turn_index=current_turn,
+                                        user_id=submit_user_id,
+                                        role_name=user_role,
+                                        sender="ai",
+                                        content=feedback_message,
+                                        submit_trace_id=turn_action_trace_id
+                                    )
+                                st.warning(
+                                    feedback_message
+                                    or "Your action needs to be more concrete before the scenario can advance."
+                                )
+                            else:
+                                log_turn_action_event(
+                                    "submit_turn_action_local_validation_accepted",
+                                    submit_trace_id=turn_action_trace_id
+                                )
+                                try:
+                                    log_turn_action_event(
+                                        "pending_turn_action_save_started",
+                                        submit_trace_id=turn_action_trace_id,
+                                        session_id=session_id,
+                                        turn_index=current_turn,
+                                        user_id=submit_user_id,
+                                        role_name=user_role,
+                                        action_length=len(action_input_value)
+                                    )
+                                    pending_action_id = save_pending_turn_action(
+                                        session_id=session_id,
+                                        turn_index=current_turn,
+                                        user_id=submit_user_id,
+                                        role_name=user_role,
+                                        action_text=action_input_value
+                                    )
+                                    log_turn_action_event(
+                                        "pending_turn_action_saved",
+                                        submit_trace_id=turn_action_trace_id,
+                                        pending_action_id=pending_action_id
+                                    )
+                                    refreshed_pending_actions = get_pending_turn_actions_for_session_turn(
+                                        session_id,
+                                        current_turn
+                                    )
+                                    refreshed_actions_by_role = {
+                                        action["role_name"]: action
+                                        for action in refreshed_pending_actions
+                                    }
+
+                                    if has_completed_turn(session_id, current_turn):
+                                        mark_pending_turn_actions_consumed(session_id, current_turn)
+                                        log_turn_action_event(
+                                            "joint_turn_already_completed_skip_generation",
+                                            submit_trace_id=turn_action_trace_id,
+                                            session_id=session_id,
+                                            turn_index=current_turn
+                                        )
+                                        st.info("This turn already advanced. Reloading the latest scenario state.")
+                                        st.rerun()
+
+                                    if "role_a" not in refreshed_actions_by_role or "role_b" not in refreshed_actions_by_role:
+                                        log_turn_action_event(
+                                            "pending_turn_action_saved_waiting_for_other",
+                                            submit_trace_id=turn_action_trace_id,
+                                            session_id=session_id,
+                                            turn_index=current_turn
+                                        )
+                                        st.success("Your action has been submitted. Waiting for the other participant.")
+                                        st.rerun()
+
+                                    log_turn_action_event(
+                                        "pending_turn_actions_both_ready_after_save",
+                                        submit_trace_id=turn_action_trace_id,
+                                        session_id=session_id,
+                                        turn_index=current_turn
+                                    )
+                                    claim_result = claim_pending_turn_actions_for_generation(
+                                        session_id=session_id,
+                                        turn_index=current_turn
+                                    )
+                                    claim_status = claim_result.get("status")
+
+                                    if claim_status == "already_completed":
+                                        mark_pending_turn_actions_consumed(session_id, current_turn)
+                                        log_turn_action_event(
+                                            "joint_turn_already_completed_skip_generation",
+                                            submit_trace_id=turn_action_trace_id,
+                                            session_id=session_id,
+                                            turn_index=current_turn
+                                        )
+                                        st.info("This turn already advanced. Reloading the latest scenario state.")
+                                        st.rerun()
+
+                                    if claim_status != "ready":
+                                        st.success("Your action has been submitted. Waiting for the other participant.")
+                                        st.rerun()
+
+                                    actions_by_role = claim_result.get("actions") or {}
+                                    role_a_action = normalize_app_text(
+                                        (actions_by_role.get("role_a") or {}).get("action_text")
+                                    )
+                                    role_b_action = normalize_app_text(
+                                        (actions_by_role.get("role_b") or {}).get("action_text")
+                                    )
+                                    log_turn_action_event(
+                                        "pending_turn_actions_both_ready",
+                                        submit_trace_id=turn_action_trace_id,
+                                        session_id=session_id,
+                                        turn_index=current_turn
+                                    )
+
+                                    generation_status = st.empty()
+                                    generation_status.caption("Generating next situation from both actions...")
+                                    log_turn_action_event(
+                                        "joint_turn_generation_started",
+                                        submit_trace_id=turn_action_trace_id,
+                                        session_id=session_id,
+                                        turn_index=current_turn
+                                    )
+                                    joint_turn_result = generate_next_situation_from_joint_actions(
+                                        current_session=current_session,
+                                        role_a_action=role_a_action,
+                                        role_b_action=role_b_action,
+                                        recent_turn_history=recent_turn_history,
+                                        debug_trace_id=turn_action_trace_id
+                                    )
+                                    next_situation = normalize_app_text(
+                                        (joint_turn_result or {}).get("next_situation")
+                                    )
+                                    role_a_suggestion = normalize_app_text(
+                                        (joint_turn_result or {}).get("role_a_suggestion")
+                                    )
+                                    role_b_suggestion = normalize_app_text(
+                                        (joint_turn_result or {}).get("role_b_suggestion")
+                                    )
+                                    log_turn_action_event(
+                                        "joint_turn_generation_completed",
+                                        submit_trace_id=turn_action_trace_id,
+                                        next_situation_length=len((next_situation or "").strip()),
+                                        next_situation_preview=short_debug_preview(next_situation)
+                                    )
+
+                                    if (next_situation or "").strip() == "":
+                                        reset_pending_turn_actions_to_pending(session_id, current_turn)
+                                        st.error("The next situation could not be generated. Please try again.")
+                                    else:
+                                        action_summary = (
+                                            f"Role A action: {role_a_action}\n\n"
+                                            f"Role B action: {role_b_action}"
+                                        )
+                                        log_turn_action_event(
+                                            "joint_turn_persistence_started",
+                                            submit_trace_id=turn_action_trace_id,
+                                            session_id=session_id,
+                                            turn_index=current_turn
+                                        )
+                                        persisted = complete_joint_turn(
+                                            session_id=session_id,
+                                            expected_turn=current_turn,
+                                            submitted_action_summary=action_summary,
+                                            resulting_situation=next_situation,
+                                            role_a_suggestion=role_a_suggestion,
+                                            role_b_suggestion=role_b_suggestion
+                                        )
+
+                                        if persisted:
+                                            log_turn_action_event(
+                                                "joint_turn_suggestions_saved",
+                                                submit_trace_id=turn_action_trace_id,
+                                                next_turn_index=current_turn + 1,
+                                                role_a_suggestion_preview=short_debug_preview(role_a_suggestion),
+                                                role_b_suggestion_preview=short_debug_preview(role_b_suggestion)
+                                            )
+                                            try:
+                                                for pending_action in actions_by_role.values():
+                                                    add_ai_message(
+                                                        session_id=session_id,
+                                                        turn_index=current_turn,
+                                                        user_id=pending_action["user_id"],
+                                                        role_name=pending_action["role_name"],
+                                                        sender="action",
+                                                        content=pending_action["action_text"]
+                                                    )
+                                            except Exception as exc:
+                                                log_turn_action_event(
+                                                    "joint_turn_action_message_save_failed",
+                                                    submit_trace_id=turn_action_trace_id,
+                                                    exception_type=type(exc).__name__,
+                                                    exception_message=str(exc)
+                                                )
+
+                                            log_turn_action_event(
+                                                "pending_turn_actions_consumed",
+                                                submit_trace_id=turn_action_trace_id,
+                                                session_id=session_id,
+                                                turn_index=current_turn
+                                            )
+                                            reloaded_session = get_session_by_room(submit_room_id)
+                                            reloaded_turn = None
+                                            reloaded_situation_preview = ""
+                                            if reloaded_session is not None:
+                                                reloaded_turn = reloaded_session.get("current_turn")
+                                                reloaded_situation_preview = short_debug_preview(
+                                                    reloaded_session.get("current_situation", "")
+                                                )
+                                            log_turn_action_event(
+                                                "joint_turn_persistence_completed",
+                                                submit_trace_id=turn_action_trace_id,
+                                                reloaded_current_turn=reloaded_turn,
+                                                reloaded_current_situation_preview=reloaded_situation_preview
+                                            )
+                                            st.success("Both actions were applied. The story advanced to the next turn.")
+                                            st.rerun()
+
+                                        if has_completed_turn(session_id, current_turn):
+                                            mark_pending_turn_actions_consumed(session_id, current_turn)
+                                            log_turn_action_event(
+                                                "joint_turn_already_completed_skip_generation",
+                                                submit_trace_id=turn_action_trace_id,
+                                                session_id=session_id,
+                                                turn_index=current_turn
+                                            )
+                                            st.info("This turn was already completed elsewhere. Reloading the latest scenario state.")
+                                            st.rerun()
+
+                                        reset_pending_turn_actions_to_pending(session_id, current_turn)
+                                        st.error("The joint turn could not be saved. Please try again.")
+                                except Exception as exc:
+                                    if not has_completed_turn(session_id, current_turn):
+                                        reset_pending_turn_actions_to_pending(session_id, current_turn)
+                                    log_turn_action_event(
+                                        "submit_turn_action_exception",
+                                        submit_trace_id=turn_action_trace_id,
+                                        exception_type=type(exc).__name__,
+                                        exception_message=str(exc)
+                                    )
+                                    st.error("Something went wrong while processing the joint turn. Please try again.")
+
+            with st.container(border=True):
+                st.markdown("**Turn Submission Status**")
+                st.write(
+                    f"**You:** {'Submitted' if current_user_pending_action is not None else 'Not yet submitted'}"
+                )
+                st.write(
+                    f"**Other participant:** {'Submitted' if other_participant_submitted else 'Waiting'}"
+                )
+                if current_user_pending_action is not None:
+                    st.write(
+                        f"**Your submitted action:** {normalize_app_text(current_user_pending_action.get('action_text'))}"
+                    )
+                if other_pending_action is not None:
+                    st.write("**Other participant's action:**")
+                    with st.container(border=True):
+                        st.write(normalize_app_text(other_pending_action.get("action_text")))
+
+            if current_user_pending_action is not None:
                 log_turn_action_event(
-                    "submit_turn_action_started",
-                    submit_trace_id=turn_action_trace_id,
+                    "pending_turn_action_current_user_already_submitted",
                     session_id=session_id,
                     turn_index=current_turn,
-                    user_id=submit_user_id,
-                    role_name=user_role,
-                    action_length=len(action_input_value)
+                    status=current_user_pending_action.get("status")
                 )
-
-                if action_input_value == "":
-                    st.error("Action cannot be empty.")
+                if current_user_pending_action.get("status") == "generating" or other_participant_submitted:
+                    st.info("Your action has been submitted. Waiting for the story to advance.")
                 else:
-                    recent_turn_history = get_turn_history(session_id)[-3:]
-                    log_turn_action_event(
-                        "submit_turn_action_local_validation_started",
-                        submit_trace_id=turn_action_trace_id,
-                        session_id=session_id,
-                        turn_index=current_turn,
-                        history_count=len(recent_turn_history)
-                    )
-                    validation = validate_turn_action(
-                        action_text=action_input_value,
-                        current_session=current_session,
-                        user_role=user_role
-                    )
-
-                    if not validation["is_valid"]:
-                        feedback_message = normalize_app_text(validation.get("feedback"))
-                        log_turn_action_event(
-                            "submit_turn_action_local_validation_rejected",
-                            submit_trace_id=turn_action_trace_id,
-                            reason=short_debug_preview(feedback_message)
-                        )
-                        if feedback_message:
-                            add_ai_message_with_logging(
-                                branch_name="validation_feedback_save",
-                                session_id=session_id,
-                                turn_index=current_turn,
-                                user_id=submit_user_id,
-                                role_name=user_role,
-                                sender="ai",
-                                content=feedback_message,
-                                submit_trace_id=turn_action_trace_id
-                            )
-                        st.warning(
-                            feedback_message
-                            or "Your action needs to be more concrete before the scenario can advance."
-                        )
-                    else:
-                        log_turn_action_event(
-                            "submit_turn_action_local_validation_accepted",
-                            submit_trace_id=turn_action_trace_id
-                        )
-                        try:
-                            log_turn_action_event(
-                                "pending_turn_action_save_started",
-                                submit_trace_id=turn_action_trace_id,
-                                session_id=session_id,
-                                turn_index=current_turn,
-                                user_id=submit_user_id,
-                                role_name=user_role,
-                                action_length=len(action_input_value)
-                            )
-                            pending_action_id = save_pending_turn_action(
-                                session_id=session_id,
-                                turn_index=current_turn,
-                                user_id=submit_user_id,
-                                role_name=user_role,
-                                action_text=action_input_value
-                            )
-                            log_turn_action_event(
-                                "pending_turn_action_saved",
-                                submit_trace_id=turn_action_trace_id,
-                                pending_action_id=pending_action_id
-                            )
-                            refreshed_pending_actions = get_pending_turn_actions_for_session_turn(
-                                session_id,
-                                current_turn
-                            )
-                            refreshed_actions_by_role = {
-                                action["role_name"]: action
-                                for action in refreshed_pending_actions
-                            }
-
-                            if has_completed_turn(session_id, current_turn):
-                                mark_pending_turn_actions_consumed(session_id, current_turn)
-                                log_turn_action_event(
-                                    "joint_turn_already_completed_skip_generation",
-                                    submit_trace_id=turn_action_trace_id,
-                                    session_id=session_id,
-                                    turn_index=current_turn
-                                )
-                                st.info("This turn already advanced. Reloading the latest scenario state.")
-                                st.rerun()
-
-                            if "role_a" not in refreshed_actions_by_role or "role_b" not in refreshed_actions_by_role:
-                                log_turn_action_event(
-                                    "pending_turn_action_saved_waiting_for_other",
-                                    submit_trace_id=turn_action_trace_id,
-                                    session_id=session_id,
-                                    turn_index=current_turn
-                                )
-                                st.success("Your action has been submitted. Waiting for the other participant.")
-                                st.rerun()
-
-                            log_turn_action_event(
-                                "pending_turn_actions_both_ready_after_save",
-                                submit_trace_id=turn_action_trace_id,
-                                session_id=session_id,
-                                turn_index=current_turn
-                            )
-                            claim_result = claim_pending_turn_actions_for_generation(
-                                session_id=session_id,
-                                turn_index=current_turn
-                            )
-                            claim_status = claim_result.get("status")
-
-                            if claim_status == "already_completed":
-                                mark_pending_turn_actions_consumed(session_id, current_turn)
-                                log_turn_action_event(
-                                    "joint_turn_already_completed_skip_generation",
-                                    submit_trace_id=turn_action_trace_id,
-                                    session_id=session_id,
-                                    turn_index=current_turn
-                                )
-                                st.info("This turn already advanced. Reloading the latest scenario state.")
-                                st.rerun()
-
-                            if claim_status != "ready":
-                                st.success("Your action has been submitted. Waiting for the other participant.")
-                                st.rerun()
-
-                            actions_by_role = claim_result.get("actions") or {}
-                            role_a_action = normalize_app_text(
-                                (actions_by_role.get("role_a") or {}).get("action_text")
-                            )
-                            role_b_action = normalize_app_text(
-                                (actions_by_role.get("role_b") or {}).get("action_text")
-                            )
-                            log_turn_action_event(
-                                "pending_turn_actions_both_ready",
-                                submit_trace_id=turn_action_trace_id,
-                                session_id=session_id,
-                                turn_index=current_turn
-                            )
-
-                            generation_status = st.empty()
-                            generation_status.caption("Generating next situation from both actions...")
-                            log_turn_action_event(
-                                "joint_turn_generation_started",
-                                submit_trace_id=turn_action_trace_id,
-                                session_id=session_id,
-                                turn_index=current_turn
-                            )
-                            joint_turn_result = generate_next_situation_from_joint_actions(
-                                current_session=current_session,
-                                role_a_action=role_a_action,
-                                role_b_action=role_b_action,
-                                recent_turn_history=recent_turn_history,
-                                debug_trace_id=turn_action_trace_id
-                            )
-                            next_situation = normalize_app_text(
-                                (joint_turn_result or {}).get("next_situation")
-                            )
-                            role_a_suggestion = normalize_app_text(
-                                (joint_turn_result or {}).get("role_a_suggestion")
-                            )
-                            role_b_suggestion = normalize_app_text(
-                                (joint_turn_result or {}).get("role_b_suggestion")
-                            )
-                            log_turn_action_event(
-                                "joint_turn_generation_completed",
-                                submit_trace_id=turn_action_trace_id,
-                                next_situation_length=len((next_situation or "").strip()),
-                                next_situation_preview=short_debug_preview(next_situation)
-                            )
-
-                            if (next_situation or "").strip() == "":
-                                reset_pending_turn_actions_to_pending(session_id, current_turn)
-                                st.error("The next situation could not be generated. Please try again.")
-                            else:
-                                action_summary = (
-                                    f"Role A action: {role_a_action}\n\n"
-                                    f"Role B action: {role_b_action}"
-                                )
-                                log_turn_action_event(
-                                    "joint_turn_persistence_started",
-                                    submit_trace_id=turn_action_trace_id,
-                                    session_id=session_id,
-                                    turn_index=current_turn
-                                )
-                                persisted = complete_joint_turn(
-                                    session_id=session_id,
-                                    expected_turn=current_turn,
-                                    submitted_action_summary=action_summary,
-                                    resulting_situation=next_situation,
-                                    role_a_suggestion=role_a_suggestion,
-                                    role_b_suggestion=role_b_suggestion
-                                )
-
-                                if persisted:
-                                    log_turn_action_event(
-                                        "joint_turn_suggestions_saved",
-                                        submit_trace_id=turn_action_trace_id,
-                                        next_turn_index=current_turn + 1,
-                                        role_a_suggestion_preview=short_debug_preview(role_a_suggestion),
-                                        role_b_suggestion_preview=short_debug_preview(role_b_suggestion)
-                                    )
-                                    try:
-                                        for pending_action in actions_by_role.values():
-                                            add_ai_message(
-                                                session_id=session_id,
-                                                turn_index=current_turn,
-                                                user_id=pending_action["user_id"],
-                                                role_name=pending_action["role_name"],
-                                                sender="action",
-                                                content=pending_action["action_text"]
-                                            )
-                                    except Exception as exc:
-                                        log_turn_action_event(
-                                            "joint_turn_action_message_save_failed",
-                                            submit_trace_id=turn_action_trace_id,
-                                            exception_type=type(exc).__name__,
-                                            exception_message=str(exc)
-                                        )
-
-                                    log_turn_action_event(
-                                        "pending_turn_actions_consumed",
-                                        submit_trace_id=turn_action_trace_id,
-                                        session_id=session_id,
-                                        turn_index=current_turn
-                                    )
-                                    reloaded_session = get_session_by_room(submit_room_id)
-                                    reloaded_turn = None
-                                    reloaded_situation_preview = ""
-                                    if reloaded_session is not None:
-                                        reloaded_turn = reloaded_session.get("current_turn")
-                                        reloaded_situation_preview = short_debug_preview(
-                                            reloaded_session.get("current_situation", "")
-                                        )
-                                    log_turn_action_event(
-                                        "joint_turn_persistence_completed",
-                                        submit_trace_id=turn_action_trace_id,
-                                        reloaded_current_turn=reloaded_turn,
-                                        reloaded_current_situation_preview=reloaded_situation_preview
-                                    )
-                                    st.success("Both actions were applied. The story advanced to the next turn.")
-                                    st.rerun()
-
-                                if has_completed_turn(session_id, current_turn):
-                                    mark_pending_turn_actions_consumed(session_id, current_turn)
-                                    log_turn_action_event(
-                                        "joint_turn_already_completed_skip_generation",
-                                        submit_trace_id=turn_action_trace_id,
-                                        session_id=session_id,
-                                        turn_index=current_turn
-                                    )
-                                    st.info("This turn was already completed elsewhere. Reloading the latest scenario state.")
-                                    st.rerun()
-
-                                reset_pending_turn_actions_to_pending(session_id, current_turn)
-                                st.error("The joint turn could not be saved. Please try again.")
-                        except Exception as exc:
-                            if not has_completed_turn(session_id, current_turn):
-                                reset_pending_turn_actions_to_pending(session_id, current_turn)
-                            log_turn_action_event(
-                                "submit_turn_action_exception",
-                                submit_trace_id=turn_action_trace_id,
-                                exception_type=type(exc).__name__,
-                                exception_message=str(exc)
-                            )
-                            st.error("Something went wrong while processing the joint turn. Please try again.")
-
-        if st.button("Reload Turn"):
-            st.rerun()
-
-    st.markdown("---")
-    st.subheader("Shared Role-play Chat")
-
-    messages = get_messages_by_room(st.session_state.room_id)
-
-    for msg in messages:
-        msg_user_id = msg[0]
-        msg_username = msg[1]
-        msg_content = msg[2]
-        msg_time = msg[3]
-
-        if (msg_username or "").strip() != "":
-            st.write(f"**{msg_username}**: {msg_content}")
-        else:
-            st.write(f"**{msg_user_id}**: {msg_content}")
-
-    with st.form("shared_chat_form", clear_on_submit=True):
-        new_message = st.text_input("Message to the other user")
-        submitted = st.form_submit_button("Send Message")
-
-        if submitted:
-            new_message_value = (new_message or "").strip()
-
-            if new_message_value == "":
-                st.error("Message cannot be empty.")
-            else:
-                add_message(
-                    st.session_state.room_id,
-                    st.session_state.user_id,
-                    st.session_state.username,
-                    new_message_value
+                    st.info("Your action has been submitted. Waiting for the other participant.")
+            elif other_pending_action is not None:
+                log_turn_action_event(
+                    "pending_turn_action_other_action_visible",
+                    session_id=session_id,
+                    turn_index=current_turn,
+                    other_role_name=other_pending_action.get("role_name"),
+                    other_action_preview=short_debug_preview(other_pending_action.get("action_text"))
                 )
+                log_turn_action_event(
+                    "pending_turn_action_current_user_can_respond",
+                    session_id=session_id,
+                    turn_index=current_turn,
+                    other_role_name=other_pending_action.get("role_name")
+                )
+                st.info("The other participant has already acted this turn:")
+                with st.container(border=True):
+                    st.write(normalize_app_text(other_pending_action.get("action_text")))
+                st.caption("Now choose how your character responds.")
+
+            st.caption("The story advances only after both participants submit valid actions for this turn.")
+
+            if st.button("Reload Turn"):
                 st.rerun()
 
-    if st.button("Refresh Members"):
-        st.rerun()
+    if current_session is not None:
+        with right_col.container(border=True):
+            st.subheader("Shared Role-play Chat")
+
+            messages = get_messages_by_room(st.session_state.room_id)
+
+            for msg in messages:
+                msg_user_id = msg[0]
+                msg_username = msg[1]
+                msg_content = msg[2]
+                msg_time = msg[3]
+
+                if (msg_username or "").strip() != "":
+                    st.write(f"**{msg_username}**: {msg_content}")
+                else:
+                    st.write(f"**{msg_user_id}**: {msg_content}")
+
+            with st.form("shared_chat_form", clear_on_submit=True):
+                new_message = st.text_input("Message to the other user")
+                submitted = st.form_submit_button("Send Message")
+
+                if submitted:
+                    new_message_value = (new_message or "").strip()
+
+                    if new_message_value == "":
+                        st.error("Message cannot be empty.")
+                    else:
+                        add_message(
+                            st.session_state.room_id,
+                            st.session_state.user_id,
+                            st.session_state.username,
+                            new_message_value
+                        )
+                        st.rerun()
+
+        if left_col.button("Refresh Members"):
+            st.rerun()
+    else:
+        st.markdown("---")
+        st.subheader("Shared Role-play Chat")
+
+        messages = get_messages_by_room(st.session_state.room_id)
+
+        for msg in messages:
+            msg_user_id = msg[0]
+            msg_username = msg[1]
+            msg_content = msg[2]
+            msg_time = msg[3]
+
+            if (msg_username or "").strip() != "":
+                st.write(f"**{msg_username}**: {msg_content}")
+            else:
+                st.write(f"**{msg_user_id}**: {msg_content}")
+
+        with st.form("shared_chat_form", clear_on_submit=True):
+            new_message = st.text_input("Message to the other user")
+            submitted = st.form_submit_button("Send Message")
+
+            if submitted:
+                new_message_value = (new_message or "").strip()
+
+                if new_message_value == "":
+                    st.error("Message cannot be empty.")
+                else:
+                    add_message(
+                        st.session_state.room_id,
+                        st.session_state.user_id,
+                        st.session_state.username,
+                        new_message_value
+                    )
+                    st.rerun()
+
+        if st.button("Refresh Members"):
+            st.rerun()
 
     if st.button("Leave Room"):
         if st.session_state.user_id and st.session_state.room_id:

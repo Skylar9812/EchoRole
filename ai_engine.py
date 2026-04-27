@@ -389,104 +389,162 @@ def classify_action_signal(text):
     return "explore"
 
 
+TURN_ACTION_SOCIAL_PREFIXES = [
+    "accept", "acknowledg", "admit", "apolog", "ask", "call", "check",
+    "clarif", "comfort", "confront", "discuss", "explain", "follow",
+    "invit", "join", "leave", "listen", "meet", "message", "messag",
+    "negotiat", "offer", "pause", "propos", "refus", "reassur",
+    "request", "respond", "restart", "say", "schedul", "set", "share",
+    "sit", "suggest", "support", "talk", "tell", "text", "understand",
+    "wait", "walk",
+]
+
+TURN_ACTION_SOCIAL_PHRASES = [
+    "check in", "follow up", "give space", "have coffee", "make peace",
+    "sit down", "start over", "take a walk",
+]
+
+TURN_ACTION_COUNTERPART_TERMS = [
+    "boss", "child", "client", "colleague", "coworker", "co-worker",
+    "daughter", "employee", "father", "friend", "he", "her", "him",
+    "manager", "member", "mother", "our", "parent", "partner", "roommate",
+    "son", "student", "supervisor", "teammate", "teammate", "teacher",
+    "them", "their", "wife", "husband", "girlfriend", "boyfriend",
+]
+
+TURN_ACTION_EMOTION_KEYWORDS = [
+    "angry", "anxious", "annoyed", "ashamed", "disappointed", "frustrated",
+    "hurt", "mad", "nervous", "overwhelmed", "sad", "stressed", "upset",
+    "worried",
+]
+
+TURN_ACTION_VAGUE_PHRASES = [
+    "do better", "do something", "fix it", "handle it", "be nice",
+    "be better", "calm down", "try harder", "make it work", "say something",
+    "deal with it", "figure it out",
+]
+
+TURN_ACTION_META_PHRASES = [
+    "advance the story", "advance turn", "ask the ai", "generate next turn",
+    "generate the next scene", "reload turn",
+]
+
+TURN_ACTION_CLEARLY_UNRELATED_PHRASES = [
+    "buy a spaceship", "cast a spell", "fight a dragon", "hack the database",
+    "leave the planet", "summon a dragon", "teleport away",
+]
+
+TURN_ACTION_UNSAFE_PHRASES = [
+    "abuse", "blackmail", "hit", "hurt them", "hurt her", "hurt him",
+    "intimidate", "kill", "punch", "shove", "slap", "threat", "threaten",
+]
+
+
+def _contains_prefixed_word(words, prefixes):
+    return any(
+        word.startswith(prefix)
+        for word in words
+        for prefix in prefixes
+    )
+
+
+def _has_social_action_signal(lowered, words):
+    return _contains_prefixed_word(words, TURN_ACTION_SOCIAL_PREFIXES) or any(
+        phrase in lowered for phrase in TURN_ACTION_SOCIAL_PHRASES
+    )
+
+
+def _has_counterpart_or_context_signal(lowered, words):
+    if any(term in lowered for term in TURN_ACTION_COUNTERPART_TERMS):
+        return True
+
+    if '"' in lowered:
+        return True
+
+    content_words = [word for word in words if len(word) >= 3]
+    return len(content_words) >= 5
+
+
+def _is_meta_turn_action(lowered):
+    return any(phrase in lowered for phrase in TURN_ACTION_META_PHRASES)
+
+
+def _is_clearly_unrelated_turn_action(lowered):
+    return any(phrase in lowered for phrase in TURN_ACTION_CLEARLY_UNRELATED_PHRASES)
+
+
+def _is_unsafe_turn_action(lowered):
+    return any(phrase in lowered for phrase in TURN_ACTION_UNSAFE_PHRASES)
+
+
 def _validate_turn_action_local(action_text, current_session, user_role):
     text = action_text.strip()
     lowered = text.lower()
     words = re.findall(r"[a-zA-Z']+", lowered)
 
-    action_keywords = [
-        "ask", "tell", "message", "apologize", "apologise", "propose",
-        "listen", "explain", "clarify", "request", "schedule", "meet",
-        "offer", "set", "agree", "discuss", "acknowledge", "invite",
-        "negotiate", "share", "restate", "summarize", "summarise"
-    ]
-    emotion_keywords = [
-        "angry", "mad", "upset", "hurt", "sad", "frustrated",
-        "annoyed", "stressed", "unfair", "disappointed"
-    ]
-    vague_phrases = [
-        "do better", "fix it", "handle it", "be nice", "be better",
-        "calm down", "try harder", "make it work", "talk to them",
-        "say something", "deal with it"
-    ]
-    interpersonal_terms = [
-        "manager", "member", "team", "supervisor", "colleague", "client",
-        "they", "them", "their", "other", "person", "conversation",
-        "meeting", "message", "email", "call", "deadline", "workload",
-        "support", "expectation", "feedback", "apology", "apologize",
-        "apologise", "sorry", "listen", "clarify", "explain", "request",
-        "discuss", "acknowledge", "negotiate", "offer"
-    ]
-    stopwords = {
-        "about", "after", "again", "because", "before", "from", "have",
-        "into", "that", "their", "them", "then", "there", "this", "will",
-        "with", "what", "when", "where", "would", "could", "should"
-    }
-
-    role_label = get_role_label(user_role)
-    has_action_keyword = any(keyword in lowered for keyword in action_keywords)
-    has_emotion_keyword = any(keyword in lowered for keyword in emotion_keywords)
-    is_short = len(words) < 5 or len(text) < 18
-    is_vague_phrase = any(phrase in lowered for phrase in vague_phrases) and len(words) <= 8
-    has_interpersonal_term = any(term in lowered for term in interpersonal_terms)
-
-    context_text = " ".join([
-        current_session.get("context", ""),
-        current_session.get("conflict", ""),
-        current_session.get("current_situation", ""),
-        get_role_brief(current_session, user_role)
-    ]).lower()
-    context_terms = {
-        word for word in re.findall(r"[a-zA-Z']+", context_text)
-        if len(word) >= 4 and word not in stopwords
-    }
-    action_terms = {
-        word for word in words
-        if len(word) >= 4 and word not in stopwords
-    }
-    has_context_overlap = bool(context_terms.intersection(action_terms))
+    has_social_action = _has_social_action_signal(lowered, words)
+    has_emotion_keyword = any(keyword in lowered for keyword in TURN_ACTION_EMOTION_KEYWORDS)
+    is_short = len(words) < 2 or len(text) < 8
+    is_vague_phrase = any(phrase in lowered for phrase in TURN_ACTION_VAGUE_PHRASES)
+    has_counterpart_or_context = _has_counterpart_or_context_signal(lowered, words)
 
     if is_short:
         return {
             "is_valid": False,
             "feedback": (
                 f"I cannot advance the story from this action yet: \"{text}\". "
-                "It is too brief to create a believable next situation. "
-                f"Revise it as a concrete move from {role_label}'s perspective: who you will address, what you will say or do, and what outcome you are trying to create."
+                "Please describe one concrete action you take next, such as what you say, ask, offer, accept, refuse, or suggest."
             )
         }
 
-    if not has_action_keyword:
+    if _is_meta_turn_action(lowered):
+        return {
+            "is_valid": False,
+            "feedback": (
+                f"I cannot advance the story from this action yet: \"{text}\". "
+                "Please describe one concrete action your character takes next, not a command to the app or AI."
+            )
+        }
+
+    if _is_clearly_unrelated_turn_action(lowered):
+        return {
+            "is_valid": False,
+            "feedback": (
+                f"I cannot advance the story from this action yet: \"{text}\". "
+                "Please keep it to a believable interpersonal move in the current role-play."
+            )
+        }
+
+    if _is_unsafe_turn_action(lowered):
+        return {
+            "is_valid": False,
+            "feedback": (
+                f"I cannot advance the story from this action yet: \"{text}\". "
+                "Please describe a concrete next move that is not violent, coercive, or abusive."
+            )
+        }
+
+    if not has_social_action:
         if has_emotion_keyword:
-            reason = "It mainly expresses emotion, but it does not yet describe a concrete move."
+            reason = "It mainly expresses a feeling, but it does not yet describe a concrete move."
         else:
-            reason = "It does not clearly describe an interpersonal action the story can respond to."
+            reason = "It does not yet describe one clear interpersonal action."
 
         return {
             "is_valid": False,
             "feedback": (
                 f"I cannot advance the story from this action yet: \"{text}\". "
-                f"{reason} Try revising it into one actionable step, such as asking a clarifying question, making a specific request, offering an apology, or proposing a next conversation."
+                f"{reason} Please describe one concrete action you take next, such as what you say, ask, offer, accept, refuse, or suggest."
             )
         }
 
-    if is_vague_phrase:
+    if is_vague_phrase or (has_social_action and len(words) < 5 and not has_counterpart_or_context):
         return {
             "is_valid": False,
             "feedback": (
                 f"I cannot advance the story from this action yet: \"{text}\". "
                 "The intention is understandable, but the move is still too vague. "
-                "Make it specific enough that the other person could realistically respond to it."
-            )
-        }
-
-    if not has_interpersonal_term and not has_context_overlap:
-        return {
-            "is_valid": False,
-            "feedback": (
-                f"I cannot advance the story from this action yet: \"{text}\". "
-                "It reads as unrelated to the current interpersonal situation. "
-                "Revise it so the action clearly connects to the conflict, the other person, or the working relationship."
+                "Please describe one concrete action you take next, such as what you say, ask, offer, accept, refuse, or suggest."
             )
         }
 
@@ -526,65 +584,31 @@ def _get_local_turn_action_risk_flags(action_text, current_session, user_role):
 
     risk_flags = []
 
-    unsafe_keywords = [
-        "threaten", "threat", "hurt them", "hurt her", "hurt him", "hurt my",
-        "hit", "slap", "punch", "shove", "violent", "violence", "intimidate",
-        "blackmail", "scream at", "yell at", "abuse", "abusive"
-    ]
-    if any(keyword in lowered for keyword in unsafe_keywords):
+    if _is_unsafe_turn_action(lowered) or any(
+        keyword in lowered
+        for keyword in ["violent", "violence", "scream at", "yell at", "abusive"]
+    ):
         risk_flags.append("unsafe")
 
     if any(keyword in lowered for keyword in ["yell", "scream", "blame", "attack", "punish"]):
         risk_flags.append("escalatory")
 
-    if len(words) < 5 or len(text) < 18:
+    if len(words) < 2 or len(text) < 8:
         risk_flags.append("too brief")
 
-    action_keywords = [
-        "ask", "tell", "message", "apologize", "apologise", "propose",
-        "listen", "explain", "clarify", "request", "schedule", "meet",
-        "offer", "set", "agree", "discuss", "acknowledge", "invite",
-        "negotiate", "share", "restate", "summarize", "summarise"
-    ]
-    vague_phrases = [
-        "do better", "fix it", "handle it", "be nice", "be better",
-        "calm down", "try harder", "make it work", "talk to them",
-        "say something", "deal with it", "figure it out"
-    ]
-    if any(phrase in lowered for phrase in vague_phrases):
+    if any(phrase in lowered for phrase in TURN_ACTION_VAGUE_PHRASES):
         risk_flags.append("too vague")
 
-    if not any(keyword in lowered for keyword in action_keywords):
-        risk_flags.append("not actionable")
+    has_social_action = _has_social_action_signal(lowered, words)
+    has_counterpart_or_context = _has_counterpart_or_context_signal(lowered, words)
 
-    context_text = " ".join([
-        current_session.get("context", ""),
-        current_session.get("conflict", ""),
-        current_session.get("current_situation", ""),
-        get_role_brief(current_session, user_role),
-        get_other_role_brief(current_session, user_role),
-    ]).lower()
-    stopwords = {
-        "about", "after", "again", "because", "before", "from", "have",
-        "into", "that", "their", "them", "then", "there", "this", "will",
-        "with", "what", "when", "where", "would", "could", "should"
-    }
-    context_terms = {
-        word for word in re.findall(r"[a-zA-Z']+", context_text)
-        if len(word) >= 4 and word not in stopwords
-    }
-    action_terms = {
-        word for word in words
-        if len(word) >= 4 and word not in stopwords
-    }
-    if not context_terms.intersection(action_terms):
-        interpersonal_terms = [
-            "manager", "employee", "partner", "parent", "child", "conversation",
-            "message", "meeting", "deadline", "task", "relationship", "boundary",
-            "apology", "request", "expectation", "school", "career", "phone"
-        ]
-        if not any(term in lowered for term in interpersonal_terms):
-            risk_flags.append("unrelated")
+    if not has_social_action:
+        risk_flags.append("not actionable")
+    elif len(words) < 5 and not has_counterpart_or_context:
+        risk_flags.append("too vague")
+
+    if _is_meta_turn_action(lowered) or _is_clearly_unrelated_turn_action(lowered):
+        risk_flags.append("unrelated")
 
     return risk_flags
 
