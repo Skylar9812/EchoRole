@@ -11,3 +11,4 @@ echorole_rag_intimate_relationships_md_cards.zip
 # Python cache
 __pycache__/
 *.pyc
+rag_index/
