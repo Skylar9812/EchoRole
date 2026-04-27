@@ -1,4 +1,13 @@
+# Local debug prompt dump
+debug_last_ai_coach_prompt.txt
+
+# Local RAG index/cache files
+echorole_rag_index*
+echorole_rag_intimate_relationships_md_cards.zip
+
+# Local SQLite databases
+*.db
+
+# Python cache
 __pycache__/
 *.pyc
-echorole.db
-.env

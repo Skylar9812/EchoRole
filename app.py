@@ -540,6 +540,48 @@ def log_turn_action_event(event, submit_trace_id=None, **fields):
     )
 
 
+def maybe_log_pending_turn_ui_status(
+    *,
+    session_id,
+    turn_index,
+    current_user_pending_action,
+    other_pending_action,
+    pending_count,
+    force=False
+):
+    current_status = None
+    if current_user_pending_action is not None:
+        current_status = current_user_pending_action.get("status")
+
+    other_status = None
+    if other_pending_action is not None:
+        other_status = other_pending_action.get("status")
+
+    signature = (
+        session_id,
+        turn_index,
+        pending_count,
+        current_status,
+        other_status,
+        current_user_pending_action is not None,
+        other_pending_action is not None,
+    )
+    previous_signature = st.session_state.get("pending_turn_ui_log_signature")
+
+    if force or previous_signature != signature:
+        log_turn_action_event(
+            "pending_turn_actions_loaded_for_ui",
+            session_id=session_id,
+            turn_index=turn_index,
+            current_user_has_pending=current_user_pending_action is not None,
+            other_participant_has_pending=other_pending_action is not None,
+            current_user_pending_status=current_status,
+            other_pending_status=other_status,
+            pending_count=pending_count
+        )
+        st.session_state.pending_turn_ui_log_signature = signature
+
+
 def add_ai_message_with_logging(
     *,
     branch_name,
@@ -826,6 +868,8 @@ def get_stage_count(current_session):
 
 
 st.title("EchoRole")
+room_refresh_interval_ms = 10000
+room_refresh_enabled = False
 
 
 # ---------- 3. 大厅页 ----------
@@ -1344,12 +1388,24 @@ else:
                                 "before_generate_dynamic_ai_feedback_call",
                                 submit_trace_id=submit_trace_id
                             )
+                            latest_user_profile = get_user_profile(submit_user_id)
+                            log_ai_submit_event(
+                                "ai_coach_profile_loaded_for_submit",
+                                submit_trace_id=submit_trace_id,
+                                profile_updated_at=(latest_user_profile or {}).get("updated_at"),
+                                profile_preview=short_debug_preview(
+                                    normalize_app_text(
+                                        (latest_user_profile or {}).get("priorities")
+                                    )
+                                )
+                            )
                             ai_feedback = generate_dynamic_ai_feedback(
                                 user_role=user_role,
                                 user_text=ai_input_value,
                                 current_turn=current_turn,
                                 current_situation=current_situation,
-                                user_profile=user_profile,
+                                current_session=current_session,
+                                user_profile=latest_user_profile,
                                 recent_turn_history=recent_turn_history,
                                 debug_trace_id=submit_trace_id
                             )
@@ -1680,13 +1736,27 @@ else:
             None
         )
         other_participant_submitted = other_pending_action is not None
-        log_turn_action_event(
-            "pending_turn_actions_loaded_for_ui",
+        should_poll_for_pending_turn = (
+            (current_user_pending_action is not None and other_pending_action is None)
+            or (current_user_pending_action is None and other_pending_action is not None)
+            or (
+                current_user_pending_action is not None
+                and current_user_pending_action.get("status") == "generating"
+            )
+            or (
+                other_pending_action is not None
+                and other_pending_action.get("status") == "generating"
+            )
+        )
+        room_refresh_enabled = should_poll_for_pending_turn
+
+        maybe_log_pending_turn_ui_status(
             session_id=session_id,
             turn_index=current_turn,
-            current_user_has_pending=current_user_pending_action is not None,
-            other_participant_has_pending=other_participant_submitted,
-            pending_count=len(active_pending_actions)
+            current_user_pending_action=current_user_pending_action,
+            other_pending_action=other_pending_action,
+            pending_count=len(active_pending_actions),
+            force=should_show_ai_coach_debug()
         )
 
         with st.container(border=True):
@@ -2082,9 +2152,9 @@ else:
         clear_url()
         st.rerun()
 
-    if not st.session_state.ai_coach_submit_in_progress:
-        st_autorefresh(interval=3000, key="room_refresh")
-    else:
+    if not st.session_state.ai_coach_submit_in_progress and room_refresh_enabled:
+        st_autorefresh(interval=room_refresh_interval_ms, key="room_refresh")
+    elif st.session_state.ai_coach_submit_in_progress:
         log_ai_submit_event(
             "polling_disabled_for_ai_coach_submit",
             submit_trace_id=(st.session_state.get("last_ai_coach_debug") or {}).get("submit_trace_id"),

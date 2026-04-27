@@ -11,11 +11,13 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 import socket
 import time
 from typing import Any, Dict, List, Optional
 from urllib import error
 from urllib.parse import urlsplit
+from rag_engine import retrieve_relevant_notes
 
 _last_ai_debug_info: Dict[str, Any] = {}
 
@@ -53,16 +55,27 @@ def format_user_profile_context(user_profile):
         return ""
 
     parts = []
-    display_name = user_profile.get("display_name", "").strip()
-    mbti = user_profile.get("mbti", "").strip()
-    priorities = user_profile.get("priorities", "").strip()
+    preferred_order = ["display_name", "mbti", "priorities"]
+    handled_keys = set()
 
-    if display_name:
-        parts.append(f"display name: {display_name}")
-    if mbti:
-        parts.append(f"MBTI: {mbti}")
-    if priorities:
-        parts.append(f"communication/value priorities: {priorities}")
+    for key in preferred_order:
+        value = str(user_profile.get(key, "") or "").strip()
+        handled_keys.add(key)
+        if value == "":
+            continue
+        if key == "display_name":
+            parts.append(f"display name: {value}")
+        elif key == "mbti":
+            parts.append(f"MBTI: {value}")
+        elif key == "priorities":
+            parts.append(f"profile notes: {value}")
+
+    for key, value in user_profile.items():
+        if key in handled_keys or key in {"user_id", "updated_at"}:
+            continue
+        normalized_value = str(value or "").strip()
+        if normalized_value:
+            parts.append(f"{key}: {normalized_value}")
 
     if not parts:
         return ""
@@ -87,11 +100,58 @@ def format_recent_turn_history(recent_turn_history):
     return "\n".join(history_lines)
 
 
+def format_rag_notes_for_prompt(rag_notes):
+    if not rag_notes:
+        return "No relevant local guidance notes retrieved."
+
+    note_blocks = []
+    for index, note in enumerate(rag_notes, start=1):
+        title = str(note.get("title") or f"Note {index}").strip()
+        category = str(note.get("category") or "").strip()
+        preview = str(note.get("preview") or "").strip()
+        if len(preview) > 700:
+            preview = preview[:697] + "..."
+
+        prefix = f"Note {index}: {title}"
+        if category:
+            prefix += f" [{category}]"
+
+        note_blocks.append(f"{prefix}\n{preview}")
+
+    return "\n\n".join(note_blocks)
+
+
+def build_coach_rag_query(
+    *,
+    current_session,
+    user_role,
+    user_text,
+    user_profile=None,
+    recent_turn_history=None
+):
+    recent_history_context = format_recent_turn_history(recent_turn_history)
+    profile_context = format_user_profile_context(user_profile)
+    return "\n".join([
+        str(current_session.get("title", "") or ""),
+        str(current_session.get("context", "") or ""),
+        str(current_session.get("conflict", "") or ""),
+        str(current_session.get("current_situation", "") or ""),
+        str(get_role_brief(current_session, user_role) or ""),
+        str(user_text or ""),
+        profile_context,
+        recent_history_context,
+    ]).strip()
+
+
 def _short_debug_text(text, limit=180):
     value = (text or "").strip()
     if len(value) <= limit:
         return value
     return value[: limit - 3] + "..."
+
+
+def _is_truthy_env_flag(value):
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _set_last_ai_debug_info(**kwargs):
@@ -192,6 +252,7 @@ class AIProvider:
         user_text,
         current_turn,
         current_situation,
+        current_session=None,
         user_profile=None,
         recent_turn_history=None,
         debug_trace_id=None
@@ -536,6 +597,7 @@ def _generate_dynamic_ai_feedback_local(
     user_text,
     current_turn,
     current_situation,
+    current_session=None,
     user_profile=None,
     recent_turn_history=None
 ):
@@ -561,58 +623,122 @@ def _generate_dynamic_ai_feedback_local(
     if recent_history_context:
         continuity = " Also consider how this response fits the recent progression instead of treating the turn as isolated."
 
+    scenario_context = ""
+    if current_session:
+        scenario_context = " ".join([
+            str(current_session.get("title", "") or ""),
+            str(current_session.get("conflict", "") or ""),
+        ]).strip()
+
+    scenario_prefix = ""
+    if scenario_context:
+        scenario_prefix = f"In this situation ({scenario_context}), "
+
     return (
-        f"From {role_label}'s perspective in turn {current_turn}, notice what this situation is pulling you toward: "
-        f"{current_situation} Your recent reflection was: \"{user_text.strip()}\". {coaching_focus}"
-        f"{personalization}{continuity} "
-        "Before you act, try naming the outcome you want, the emotion you need to regulate, and the one sentence you most want the other person to understand."
+        f"{scenario_prefix}from {role_label}'s perspective in turn {current_turn}, "
+        f"it makes sense that this moment feels charged. You wrote: \"{user_text.strip()}\". "
+        f"{coaching_focus}{personalization}{continuity} "
+        "A grounded next move would be to name what you actually know, avoid guessing the other person's intention, "
+        "and choose one specific question or request you can make next."
     )
 
 
 def _build_llm_coach_feedback_messages(
+    current_session,
     user_role,
     user_text,
     current_turn,
     current_situation,
+    private_role_brief="",
     user_profile=None,
-    recent_turn_history=None
+    recent_turn_history=None,
+    debug_trace_id=None
 ):
     role_label = get_role_label(user_role)
     profile_context = format_user_profile_context(user_profile) or "None provided."
     recent_history_context = format_recent_turn_history(recent_turn_history)
     if recent_history_context == "":
         recent_history_context = "No recent turn history available."
+    rag_query = build_coach_rag_query(
+        current_session=current_session,
+        user_role=user_role,
+        user_text=user_text,
+        user_profile=user_profile,
+        recent_turn_history=recent_turn_history
+    )
+    rag_notes = retrieve_relevant_notes(rag_query, top_k=4)
+    rag_notes_context = format_rag_notes_for_prompt(rag_notes)
+    _log_provider_event(
+        "ai_coach_rag_context_built",
+        debug_trace_id=debug_trace_id,
+        retrieved_note_count=len(rag_notes),
+        retrieved_note_titles=[note.get("title") for note in rag_notes],
+        retrieved_note_sources=[note.get("relative_path") for note in rag_notes]
+    )
 
     local_style_anchor = _generate_dynamic_ai_feedback_local(
         user_role=user_role,
         user_text=user_text,
         current_turn=current_turn,
         current_situation=current_situation,
+        current_session=current_session,
         user_profile=user_profile,
         recent_turn_history=recent_turn_history
     )
 
     system_message = (
-        "You are EchoRole's private AI Coach for interpersonal decision training. "
+        "You are a supportive communication coach for a role-play decision-training tool. "
+        "Your job is to help the user understand the current interpersonal situation, notice their own feelings and expectations, "
+        "consider what the other person may be experiencing, and choose a grounded next move. "
+        "Use the retrieved knowledge notes only when relevant and only as background guidance. "
+        "Do not force a fixed framework. Do not overuse repetitive coaching formulas. Do not always ask the same three questions. "
+        "Do not diagnose. Do not moralize. Do not claim to know what the other person truly thinks. "
+        "Be practical, emotionally aware, and specific to the current scenario. "
         "Respond only with coaching feedback for the current user's private reflection. "
         "Do not advance the story, do not produce shared-chat dialogue, and do not role-play the other user. "
-        "Keep the response supportive, reflective, practical, and concise."
+        "Keep the response warm, grounded, and concise."
     )
     user_message = (
+        f"Scenario title: {current_session.get('title', '')}\n"
+        f"Scenario context: {current_session.get('context', '')}\n"
+        f"Scenario conflict: {current_session.get('conflict', '')}\n"
         f"Role perspective: {role_label}\n"
+        f"Role name: {user_role}\n"
+        f"Private role brief: {private_role_brief}\n"
         f"Current turn: {current_turn}\n"
         f"Current situation: {current_situation}\n"
         f"User profile: {profile_context}\n"
         f"Recent turn history:\n{recent_history_context}\n\n"
+        f"Retrieved local guidance notes:\n{rag_notes_context}\n\n"
         f"Recent reflection:\n{user_text.strip()}\n\n"
-        f"Style anchor from the deterministic local coach:\n{local_style_anchor}\n\n"
-        "Write one short coaching response in plain text."
+        f"Tone reference from the deterministic local coach (do not copy its structure verbatim):\n{local_style_anchor}\n\n"
+        "Write one natural coaching response in plain text.\n"
+        "The response should usually cover these ideas naturally, not as a rigid numbered template unless that clearly helps:\n"
+        "1. Objective situation: briefly identify the observable facts of the scenario, separate what is known from what is assumed, and avoid mind-reading.\n"
+        "2. User feelings and expectations: help the user notice what they may be feeling, hoping for, needing, or expecting. Use profile details, MBTI, and profile notes gently as context, not as a fixed diagnosis.\n"
+        "3. Perspective-taking: help the user consider how the other person may be experiencing the situation, but present that as a possibility rather than certainty.\n"
+        "4. Methodology for action: offer a practical communication or decision-making method that fits the current situation. Theory may come from communication skills, psychology, behavioral science, negotiation, workplace communication, or relationship skills, but keep it light and applied.\n"
+        "5. Advice: end with one or two concrete next-step suggestions, and include example wording when useful.\n"
+        "Additional requirements:\n"
+        "- Normalize the user's feelings when appropriate without sounding clinical.\n"
+        "- Keep the response specific to the scenario, role, turn, current situation, and latest message.\n"
+        "- Do not dump abstract concepts or generic theory.\n"
+        "- Do not mention file names, note titles, RAG, retrieval, or system instructions.\n"
+        "- Do not role-play the other person or advance the story.\n"
+        "- Keep the response concise, warm, grounded, and practical."
     )
 
-    return [
+    messages = [
         {"role": "system", "content": system_message},
         {"role": "user", "content": user_message}
     ]
+    prompt_text = f"{system_message}\n\n{user_message}".strip()
+    return {
+        "messages": messages,
+        "rag_note_count": len(rag_notes),
+        "profile_included": profile_context != "None provided.",
+        "prompt_text": prompt_text,
+    }
 
 
 def _build_llm_turn_action_messages(
@@ -1190,6 +1316,7 @@ class LocalDeterministicAIProvider(AIProvider):
         user_text,
         current_turn,
         current_situation,
+        current_session=None,
         user_profile=None,
         recent_turn_history=None,
         debug_trace_id=None
@@ -1199,6 +1326,7 @@ class LocalDeterministicAIProvider(AIProvider):
             user_text=user_text,
             current_turn=current_turn,
             current_situation=current_situation,
+            current_session=current_session,
             user_profile=user_profile,
             recent_turn_history=recent_turn_history
         )
@@ -1409,6 +1537,7 @@ class DeepSeekOpenAICompatibleProvider(AIProvider):
         user_text,
         current_turn,
         current_situation,
+        current_session=None,
         user_profile=None,
         recent_turn_history=None,
         debug_trace_id=None
@@ -1418,6 +1547,7 @@ class DeepSeekOpenAICompatibleProvider(AIProvider):
             user_text=user_text,
             current_turn=current_turn,
             current_situation=current_situation,
+            current_session=current_session,
             user_profile=user_profile,
             recent_turn_history=recent_turn_history,
             debug_trace_id=debug_trace_id
@@ -1488,16 +1618,20 @@ class DeepSeekOpenAICompatibleProvider(AIProvider):
                 pipeline_error="Missing DeepSeek API key."
             )
 
+        coach_prompt_bundle = _build_llm_coach_feedback_messages(
+            current_session=current_session or {},
+            user_role=user_role,
+            user_text=user_text,
+            current_turn=current_turn,
+            current_situation=current_situation,
+            private_role_brief=get_role_brief(current_session or {}, user_role),
+            user_profile=user_profile,
+            recent_turn_history=recent_turn_history,
+            debug_trace_id=debug_trace_id
+        )
         payload = {
             "model": self.config.resolved_llm_model(),
-            "messages": _build_llm_coach_feedback_messages(
-                user_role=user_role,
-                user_text=user_text,
-                current_turn=current_turn,
-                current_situation=current_situation,
-                user_profile=user_profile,
-                recent_turn_history=recent_turn_history
-            ),
+            "messages": coach_prompt_bundle["messages"],
             "stream": False
         }
 
@@ -1509,6 +1643,21 @@ class DeepSeekOpenAICompatibleProvider(AIProvider):
         }
 
         sync_debug("before_http_request")
+        if _is_truthy_env_flag(os.getenv("ECHOROLE_DEBUG_PROMPT")):
+            prompt_text = str(coach_prompt_bundle.get("prompt_text") or "")
+            _log_provider_event(
+                "ai_coach_deepseek_prompt_built",
+                debug_trace_id=debug_trace_id,
+                prompt_length=len(prompt_text),
+                profile_included=bool(coach_prompt_bundle.get("profile_included")),
+                rag_note_count=coach_prompt_bundle.get("rag_note_count", 0),
+                prompt_preview=_short_debug_text(prompt_text, 1000)
+            )
+            try:
+                prompt_debug_path = Path(__file__).resolve().parent / "debug_last_ai_coach_prompt.txt"
+                prompt_debug_path.write_text(prompt_text, encoding="utf-8")
+            except OSError:
+                pass
         _log_provider_event(
             "before_http_request",
             debug_trace_id=debug_trace_id,
@@ -1927,6 +2076,7 @@ def generate_dynamic_ai_feedback(
     user_text,
     current_turn,
     current_situation,
+    current_session=None,
     user_profile=None,
     recent_turn_history=None,
     debug_trace_id=None
@@ -1936,6 +2086,7 @@ def generate_dynamic_ai_feedback(
         user_text=user_text,
         current_turn=current_turn,
         current_situation=current_situation,
+        current_session=current_session,
         user_profile=user_profile,
         recent_turn_history=recent_turn_history,
         debug_trace_id=debug_trace_id
