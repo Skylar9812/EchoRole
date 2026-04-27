@@ -188,6 +188,22 @@ def init_db():
     )
     """)
 
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS peer_feedback (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        room_id INTEGER NOT NULL,
+        session_id INTEGER NOT NULL,
+        rater_user_id TEXT NOT NULL,
+        rated_user_id TEXT NOT NULL,
+        star_rating REAL NOT NULL,
+        score_points INTEGER NOT NULL,
+        comment TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (room_id) REFERENCES rooms(id),
+        FOREIGN KEY (session_id) REFERENCES sessions(id)
+    )
+    """)
+
     # 唯一索引，避免重复数据
     cursor.execute("""
     CREATE UNIQUE INDEX IF NOT EXISTS idx_members_user_room
@@ -222,6 +238,11 @@ def init_db():
     cursor.execute("""
     CREATE UNIQUE INDEX IF NOT EXISTS idx_turn_suggestions_session_turn_role
     ON turn_suggestions(session_id, turn_index, role_name)
+    """)
+
+    cursor.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_peer_feedback_session_rater_rated
+    ON peer_feedback(session_id, rater_user_id, rated_user_id)
     """)
 
     conn.commit()
@@ -327,6 +348,150 @@ def save_user_profile(user_id, display_name=None, mbti=None, priorities=None):
 
     conn.commit()
     conn.close()
+
+
+def get_peer_feedback_for_session(session_id, rater_user_id, rated_user_id):
+    if not session_id or not rater_user_id or not rated_user_id:
+        return None
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT
+            id,
+            room_id,
+            session_id,
+            rater_user_id,
+            rated_user_id,
+            star_rating,
+            score_points,
+            comment,
+            created_at
+        FROM peer_feedback
+        WHERE session_id = ?
+          AND rater_user_id = ?
+          AND rated_user_id = ?
+        LIMIT 1
+        """,
+        (session_id, rater_user_id, rated_user_id)
+    )
+
+    row = cursor.fetchone()
+    conn.close()
+
+    if row is None:
+        return None
+
+    return {
+        "id": row["id"],
+        "room_id": row["room_id"],
+        "session_id": row["session_id"],
+        "rater_user_id": row["rater_user_id"],
+        "rated_user_id": row["rated_user_id"],
+        "star_rating": float(row["star_rating"]),
+        "score_points": int(row["score_points"]),
+        "comment": row["comment"] or "",
+        "created_at": row["created_at"],
+    }
+
+
+def save_peer_feedback(
+    room_id,
+    session_id,
+    rater_user_id,
+    rated_user_id,
+    star_rating,
+    comment=""
+):
+    if not room_id or not session_id or not rater_user_id or not rated_user_id:
+        return None
+    if rater_user_id == rated_user_id:
+        return None
+
+    normalized_rating = round(float(star_rating) * 2) / 2
+    if normalized_rating < 0.5:
+        normalized_rating = 0.5
+    if normalized_rating > 5.0:
+        normalized_rating = 5.0
+
+    score_points = int(round(normalized_rating * 10))
+    normalized_comment = str(comment or "").strip()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute(
+            """
+            INSERT INTO peer_feedback (
+                room_id,
+                session_id,
+                rater_user_id,
+                rated_user_id,
+                star_rating,
+                score_points,
+                comment
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                room_id,
+                session_id,
+                rater_user_id,
+                rated_user_id,
+                normalized_rating,
+                score_points,
+                normalized_comment,
+            )
+        )
+        conn.commit()
+        feedback_id = cursor.lastrowid
+        log_database_event(
+            "peer_feedback_saved",
+            feedback_id=feedback_id,
+            session_id=session_id,
+            rater_user_id=rater_user_id,
+            rated_user_id=rated_user_id,
+            star_rating=normalized_rating,
+            score_points=score_points
+        )
+    except sqlite3.IntegrityError:
+        conn.close()
+        log_database_event(
+            "peer_feedback_duplicate_skipped",
+            session_id=session_id,
+            rater_user_id=rater_user_id,
+            rated_user_id=rated_user_id
+        )
+        return get_peer_feedback_for_session(session_id, rater_user_id, rated_user_id)
+
+    conn.close()
+    return get_peer_feedback_for_session(session_id, rater_user_id, rated_user_id)
+
+
+def get_total_received_peer_feedback_points(user_id):
+    if not user_id:
+        return 0
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT COALESCE(SUM(score_points), 0) AS total_points
+        FROM peer_feedback
+        WHERE rated_user_id = ?
+        """,
+        (user_id,)
+    )
+
+    row = cursor.fetchone()
+    conn.close()
+    if row is None:
+        return 0
+    return int(row["total_points"] or 0)
 
 
 def add_member(user_id, room_id, nickname=None):
