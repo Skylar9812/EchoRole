@@ -47,9 +47,15 @@ def init_db():
     CREATE TABLE IF NOT EXISTS rooms (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         invite_code TEXT UNIQUE NOT NULL,
+        event_version INTEGER NOT NULL DEFAULT 0,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """)
+
+    cursor.execute("PRAGMA table_info(rooms)")
+    room_columns = [row["name"] for row in cursor.fetchall()]
+    if "event_version" not in room_columns:
+        cursor.execute("ALTER TABLE rooms ADD COLUMN event_version INTEGER NOT NULL DEFAULT 0")
 
     # members
     cursor.execute("""
@@ -189,6 +195,29 @@ def init_db():
     """)
 
     cursor.execute("""
+    CREATE TABLE IF NOT EXISTS story_states (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER NOT NULL,
+        turn_index INTEGER NOT NULL,
+        shared_situation TEXT NOT NULL,
+        role_a_perspective TEXT,
+        role_b_perspective TEXT,
+        next_decision_point TEXT,
+        role_a_brief TEXT,
+        role_b_brief TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (session_id) REFERENCES sessions(id)
+    )
+    """)
+
+    cursor.execute("PRAGMA table_info(story_states)")
+    story_state_columns = [row["name"] for row in cursor.fetchall()]
+    if "role_a_brief" not in story_state_columns:
+        cursor.execute("ALTER TABLE story_states ADD COLUMN role_a_brief TEXT")
+    if "role_b_brief" not in story_state_columns:
+        cursor.execute("ALTER TABLE story_states ADD COLUMN role_b_brief TEXT")
+
+    cursor.execute("""
     CREATE TABLE IF NOT EXISTS peer_feedback (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         room_id INTEGER NOT NULL,
@@ -241,6 +270,11 @@ def init_db():
     """)
 
     cursor.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_story_states_session_turn
+    ON story_states(session_id, turn_index)
+    """)
+
+    cursor.execute("""
     CREATE UNIQUE INDEX IF NOT EXISTS idx_peer_feedback_session_rater_rated
     ON peer_feedback(session_id, rater_user_id, rated_user_id)
     """)
@@ -262,6 +296,62 @@ def create_room(invite_code):
     room_id = cursor.lastrowid
     conn.close()
     return room_id
+
+
+def get_room_event_version(room_id):
+    if not room_id:
+        return 0
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT COALESCE(event_version, 0) AS event_version
+        FROM rooms
+        WHERE id = ?
+        LIMIT 1
+        """,
+        (room_id,)
+    )
+    row = cursor.fetchone()
+    conn.close()
+
+    if row is None:
+        return 0
+    return int(row["event_version"] or 0)
+
+
+def bump_room_event_version(room_id, event_type, session_id=None):
+    if not room_id:
+        return 0
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("BEGIN IMMEDIATE")
+        cursor.execute(
+            """
+            UPDATE rooms
+            SET event_version = COALESCE(event_version, 0) + 1
+            WHERE id = ?
+            """,
+            (room_id,)
+        )
+        cursor.execute(
+            """
+            SELECT COALESCE(event_version, 0) AS event_version
+            FROM rooms
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (room_id,)
+        )
+        row = cursor.fetchone()
+        conn.commit()
+        return int(row["event_version"] or 0) if row is not None else 0
+    finally:
+        conn.close()
 
 
 def get_room_by_code(invite_code):
@@ -619,6 +709,36 @@ def get_messages_by_room(room_id):
     conn.close()
 
     return [(row["user_id"], row["username"], row["content"], row["created_at"]) for row in rows]
+
+
+def get_recent_shared_chat_messages(session_id, limit=10):
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT m.user_id, m.username, m.content, m.created_at
+        FROM messages m
+        JOIN sessions s ON s.room_id = m.room_id
+        WHERE s.id = ?
+        ORDER BY m.id DESC
+        LIMIT ?
+        """,
+        (session_id, int(limit))
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    ordered_rows = list(reversed(rows))
+    return [
+        {
+            "user_id": row["user_id"],
+            "username": row["username"],
+            "content": row["content"],
+            "created_at": row["created_at"],
+        }
+        for row in ordered_rows
+    ]
 
 
 def create_session(
@@ -1022,6 +1142,211 @@ def get_turn_suggestion(session_id, turn_index, role_name):
         return None
 
     return row["suggestion_text"]
+
+
+def _save_story_state_with_cursor(
+    cursor,
+    *,
+    session_id,
+    turn_index,
+    shared_situation,
+    role_a_perspective="",
+    role_b_perspective="",
+    next_decision_point="",
+    role_a_brief="",
+    role_b_brief=""
+):
+    cursor.execute(
+        """
+        INSERT OR REPLACE INTO story_states (
+            session_id,
+            turn_index,
+            shared_situation,
+            role_a_perspective,
+            role_b_perspective,
+            next_decision_point,
+            role_a_brief,
+            role_b_brief,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """,
+        (
+            session_id,
+            turn_index,
+            shared_situation,
+            role_a_perspective or "",
+            role_b_perspective or "",
+            next_decision_point or "",
+            role_a_brief or "",
+            role_b_brief or "",
+        )
+    )
+    return cursor.lastrowid
+
+
+def save_story_state(
+    session_id,
+    turn_index,
+    shared_situation,
+    role_a_perspective="",
+    role_b_perspective="",
+    next_decision_point="",
+    role_a_brief="",
+    role_b_brief=""
+):
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        story_state_row_id = _save_story_state_with_cursor(
+            cursor,
+            session_id=session_id,
+            turn_index=turn_index,
+            shared_situation=shared_situation,
+            role_a_perspective=role_a_perspective,
+            role_b_perspective=role_b_perspective,
+            next_decision_point=next_decision_point,
+            role_a_brief=role_a_brief,
+            role_b_brief=role_b_brief,
+        )
+        conn.commit()
+        return story_state_row_id
+    finally:
+        conn.close()
+
+
+def _row_to_story_state(row):
+    return {
+        "id": row["id"],
+        "session_id": row["session_id"],
+        "turn_index": row["turn_index"],
+        "shared_situation": row["shared_situation"] or "",
+        "role_a_perspective": row["role_a_perspective"] or "",
+        "role_b_perspective": row["role_b_perspective"] or "",
+        "next_decision_point": row["next_decision_point"] or "",
+        "role_a_brief": row["role_a_brief"] or "",
+        "role_b_brief": row["role_b_brief"] or "",
+        "created_at": row["created_at"],
+    }
+
+
+def get_latest_story_state(session_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT
+            id,
+            session_id,
+            turn_index,
+            shared_situation,
+            role_a_perspective,
+            role_b_perspective,
+            next_decision_point,
+            role_a_brief,
+            role_b_brief,
+            created_at
+        FROM story_states
+        WHERE session_id = ?
+        ORDER BY turn_index DESC, id DESC
+        LIMIT 1
+        """,
+        (session_id,)
+    )
+    row = cursor.fetchone()
+    conn.close()
+
+    if row is None:
+        return None
+    return _row_to_story_state(row)
+
+
+def get_recent_story_states(session_id, limit=3):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT
+            id,
+            session_id,
+            turn_index,
+            shared_situation,
+            role_a_perspective,
+            role_b_perspective,
+            next_decision_point,
+            role_a_brief,
+            role_b_brief,
+            created_at
+        FROM story_states
+        WHERE session_id = ?
+        ORDER BY turn_index DESC, id DESC
+        LIMIT ?
+        """,
+        (session_id, int(limit))
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [_row_to_story_state(row) for row in reversed(rows)]
+
+
+def get_role_brief_history(session_id, role_name):
+    if not session_id or role_name not in {"role_a", "role_b"}:
+        return []
+
+    brief_column = "role_a_brief" if role_name == "role_a" else "role_b_brief"
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        f"""
+        SELECT id, {brief_column} AS brief_text, created_at
+        FROM sessions
+        WHERE id = ?
+        LIMIT 1
+        """,
+        (session_id,)
+    )
+    session_row = cursor.fetchone()
+
+    cursor.execute(
+        f"""
+        SELECT id, turn_index, {brief_column} AS brief_text, created_at
+        FROM story_states
+        WHERE session_id = ?
+          AND COALESCE({brief_column}, '') != ''
+        ORDER BY turn_index ASC, id ASC
+        """,
+        (session_id,)
+    )
+    story_rows = cursor.fetchall()
+    conn.close()
+
+    history_entries = []
+    if session_row is not None:
+        original_brief = str(session_row["brief_text"] or "").strip()
+        if original_brief:
+            history_entries.append(
+                {
+                    "turn_number": 0,
+                    "brief_text": original_brief,
+                    "created_at": session_row["created_at"],
+                }
+            )
+
+    for row in story_rows:
+        brief_text = str(row["brief_text"] or "").strip()
+        if brief_text == "":
+            continue
+        history_entries.append(
+            {
+                "turn_number": max(0, int(row["turn_index"] or 0) - 1),
+                "brief_text": brief_text,
+                "created_at": row["created_at"],
+            }
+        )
+
+    return history_entries
 
 
 def has_completed_turn(session_id, turn_index):
@@ -1555,6 +1880,11 @@ def complete_joint_turn(
     expected_turn,
     submitted_action_summary,
     resulting_situation,
+    role_a_perspective="",
+    role_b_perspective="",
+    next_decision_point="",
+    role_a_brief="",
+    role_b_brief="",
     role_a_suggestion="",
     role_b_suggestion=""
 ):
@@ -1636,6 +1966,25 @@ def complete_joint_turn(
             return False
 
         next_turn_index = expected_turn + 1
+        story_state_row_id = _save_story_state_with_cursor(
+            cursor,
+            session_id=session_id,
+            turn_index=next_turn_index,
+            shared_situation=resulting_situation,
+            role_a_perspective=role_a_perspective,
+            role_b_perspective=role_b_perspective,
+            next_decision_point=next_decision_point,
+            role_a_brief=role_a_brief,
+            role_b_brief=role_b_brief,
+        )
+        log_database_event(
+            "complete_joint_turn_after_story_state_save",
+            session_id=session_id,
+            expected_turn=expected_turn,
+            next_turn_index=next_turn_index,
+            story_state_row_id=story_state_row_id
+        )
+
         cursor.execute(
             """
             INSERT OR REPLACE INTO turn_suggestions (

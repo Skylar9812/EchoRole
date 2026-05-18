@@ -12,3 +12,4 @@ echorole_rag_intimate_relationships_md_cards.zip
 __pycache__/
 *.pyc
 rag_index/
+debug_last_story_progression_prompt.txt 
