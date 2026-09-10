@@ -1,4 +1,4 @@
-"""Read-only contract tests. No production database or provider calls."""
+"""Catalog and boundary tests. No production database or provider calls."""
 import sys
 import unittest
 from fastapi.testclient import TestClient
@@ -15,7 +15,7 @@ class ApiBoundaryTests(unittest.TestCase):
         response = self.client.get("/api/v1/health")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"status": "ok", "service": "echorole-api"})
-        for module in ("app", "database", "ai_engine", "rag_engine", "streamlit"):
+        for module in ("app", "ai_engine", "rag_engine", "streamlit"):
             self.assertNotIn(module, sys.modules)
 
     def test_scenario_contract_uses_existing_content_without_private_briefs(self):
@@ -38,8 +38,8 @@ class ApiBoundaryTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/v1/scenarios", params={"category": "missing"}).json(), [])
         self.assertEqual(self.client.get("/api/v1/scenarios/missing").status_code, 404)
 
-    def test_stateful_endpoints_are_not_exposed(self):
-        self.assertEqual(self.client.post("/api/v1/rooms", json={}).status_code, 404)
+    def test_stateful_endpoints_require_identity(self):
+        self.assertEqual(self.client.post("/api/v1/rooms", json={}).status_code, 401)
         self.assertEqual(self.client.post("/api/v1/scenarios", json={}).status_code, 405)
 
 

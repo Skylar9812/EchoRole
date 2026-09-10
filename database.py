@@ -1,8 +1,10 @@
+import os
+from pathlib import Path
 import sqlite3
 import json
 from datetime import datetime
 
-DB_NAME = "echorole.db"
+DB_NAME = str(Path(os.environ.get("ECHOROLE_DB_PATH", Path(__file__).resolve().with_name("echorole.db"))).expanduser().resolve())
 SQLITE_TIMEOUT_SECONDS = 8.0
 SQLITE_BUSY_TIMEOUT_MS = int(SQLITE_TIMEOUT_SECONDS * 1000)
 
@@ -350,6 +352,17 @@ def bump_room_event_version(room_id, event_type, session_id=None):
         row = cursor.fetchone()
         conn.commit()
         return int(row["event_version"] or 0) if row is not None else 0
+    finally:
+        conn.close()
+
+
+def get_room_by_id(room_id):
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT id, invite_code, created_at FROM rooms WHERE id = ?", (room_id,)
+        ).fetchone()
+        return tuple(row) if row else None
     finally:
         conn.close()
 

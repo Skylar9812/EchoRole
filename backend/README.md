@@ -1,29 +1,58 @@
-# EchoRole FastAPI boundary
+# EchoRole FastAPI boundary — Phase 1
 
-Run all Python commands from the **repository root**. Existing modules remain at the root; do not run from `backend/` or add ad hoc `sys.path` mutations. Python 3.10+ is required.
+Run from the repository root with Python 3.10+:
 
 ```powershell
 python -m venv backend/.venv
 backend/.venv/Scripts/python -m pip install -r backend/requirements-dev.txt
-backend/.venv/Scripts/python -m uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
-```
-
-On macOS/Linux use `backend/.venv/bin/python`. Runtime-only dependencies are in `requirements.txt`; `requirements-dev.txt` also enables tests.
-
-```powershell
+backend/.venv/Scripts/python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 backend/.venv/Scripts/python -m unittest discover -s backend/tests -v
 ```
 
-Implemented routes:
+`application.py` is shared by Streamlit and FastAPI. FastAPI never imports
+`app.py`, AI, or RAG. Its lifespan calls the same initialization entry point as
+Streamlit. Imports do not open SQLite. `database.DB_NAME` defaults to the absolute
+repository `echorole.db`; set `ECHOROLE_DB_PATH` before process startup to select
+an alternate file. Use the same absolute path for both entry points. Existing
+schema, initialization SQL, persistence helpers and transactions are preserved.
 
-- `GET /api/v1/health`: process liveness only, not database/provider readiness.
-- `GET /api/v1/scenarios/categories`: existing category list.
-- `GET /api/v1/scenarios?category=...`: public previews; exact optional category filter. Unknown category returns an empty list.
-- `GET /api/v1/scenarios/{scenario_id}`: public preview, or 404.
-- OpenAPI: `/openapi.json`; interactive documentation: `/docs`.
+All paths below have prefix `/api/v1`:
 
-Only `scenario_library.py` is currently reused. Explicit response fields exclude private role briefs. The API does not import `app.py`, call `init_db()`, initialize AI/RAG, open SQLite, or expose mutation endpoints. Next.js currently calls this API server-to-server, so no browser CORS policy is needed yet.
+| Method | Path | Contract |
+| --- | --- | --- |
+| GET | `/health` | Process liveness |
+| GET | `/scenarios`, `/scenarios/categories`, `/scenarios/{scenario_id}` | Existing public scenario catalog |
+| POST | `/profiles` | `{display_name, mbti?, priorities?}`; creates UUID profile and returns bearer token (201) |
+| POST | `/rooms` | No body; creates room and adds caller (201) |
+| POST | `/rooms/{room_id}/join` | No body; joins caller, activating available role if a session exists |
+| GET | `/rooms/{room_id}` | Public room metadata and event version; membership required |
+| GET | `/rooms/{room_id}/members` | Ordered public member list; membership required |
+| POST | `/rooms/{room_id}/sessions` | `{scenario_id}`; membership required; creates session and assigns roles (201) |
+| GET | `/rooms/{room_id}/session` | Public current session, or JSON null in lobby; membership required |
 
-Keep credentials and local runtime directories out of Git. Existing AI/RAG configuration is deliberately not redefined. See `docs/migration-nextjs-fastapi.md` before adding stateful routes.
+Use `Authorization: Bearer <access_token>` for every room endpoint. Profile
+creation never accepts a user ID. Tokens are random, held in this API instance,
+and expire on restart; use a single local API worker. They do not authenticate
+or restore legacy URL identities. Durable identity/recovery and browser transport
+remain future work. No private role endpoint exists.
 
-The application factory/router structure follows the [FastAPI first-steps documentation](https://fastapi.tiangolo.com/tutorial/first-steps/).
+Responses use explicit allowlists; public session data excludes role briefs,
+role perspectives, private coach content, and complete database records. Errors
+use `detail`: 401 for missing/invalid identity, 403 for non-members, 404 for missing
+rooms/scenarios, 409 for legacy capacity/role limits, and 422 for invalid contracts.
+
+Session creation retains legacy latest-session semantics, including creating a
+new session on another request. Roles follow membership order, role_a then role_b;
+late arrivals receive the first vacant role, and returning participants retain
+their assignment. Join checks retain both active-member and reserved-role limits.
+Streamlit retains its URL restoration, UI feedback, sync callbacks and reruns.
+
+This remains local Phase 1 infrastructure. Existing multi-transaction operations
+are not atomic across concurrent callers/processes; concurrency/idempotency and
+durable authentication must be settled before broader exposure. No permissive CORS,
+AI routes, turn actions, WebSockets, or Next.js redesign were added.
+
+Tests use disposable databases and compare sqlite_master against the original
+initialization implementation. Install Streamlit and streamlit-autorefresh in the
+legacy environment to run `python -m streamlit run app.py`; they are not backend
+runtime dependencies.

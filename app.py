@@ -6,8 +6,6 @@ import html
 import os
 import re
 import uuid
-import random
-import string
 from datetime import datetime
 
 from ai_engine import (
@@ -19,24 +17,13 @@ from ai_engine import (
 )
 
 from database import (
-    init_db,
-    create_room,
     get_room_event_version,
     bump_room_event_version,
-    get_room_by_code,
     add_member,
     remove_member,
-    get_members_by_room,
-    can_user_join_room,
-    get_user_profile,
-    save_user_profile,
     add_message,
     get_messages_by_room,
-    create_session_from_scenario,
-    get_session_by_room,
-    assign_role,
     get_user_role,
-    get_all_roles_in_session,
     add_ai_message,
     get_ai_messages,
     get_recent_ai_messages_for_user,
@@ -65,12 +52,18 @@ from scenario_library import (
     get_scenarios_by_category,
 )
 
+import application as services
+from application import (
+    get_room_by_code, get_members_by_room, can_user_join_room,
+    get_user_profile, save_user_profile, get_session_by_room,
+)
+
 st.set_page_config(
     page_title="EchoRole",
     layout="wide"
 )
 
-init_db()
+services.initialize()
 
 _pending_ai_coach_state_updates = {}
 APP_RUNTIME_MARKER = "app_runtime_20260425_ai_reply_save_v3"
@@ -1850,10 +1843,9 @@ if st.session_state.invite_code is None and "invite_code" in query_params:
             st.session_state.user_id
         )
         if can_restore:
-            add_member(
-                st.session_state.user_id,
-                room_id_from_url,
-                st.session_state.username
+            services.join_room(
+                room_id_from_url, st.session_state.user_id,
+                st.session_state.username, restore=True
             )
             st.session_state.invite_code = code_from_url
             st.session_state.room_id = room_id_from_url
@@ -1874,21 +1866,11 @@ def clear_url():
     st.query_params.clear()
 
 
-def generate_invite_code(length=6):
-    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=length))
-
-
 def ensure_user_created(username, mbti=None, priorities=None):
     """鍙湁绗竴娆℃墠鍒涘缓 user_id"""
-    if st.session_state.user_id is None:
-        st.session_state.user_id = str(uuid.uuid4())
+    profile = services.create_profile(username, mbti, priorities, st.session_state.user_id)
+    st.session_state.user_id = profile["user_id"]
     st.session_state.username = username
-    save_user_profile(
-        st.session_state.user_id,
-        display_name=username,
-        mbti=mbti,
-        priorities=priorities
-    )
     save_user_to_url()
 
 
@@ -2029,18 +2011,11 @@ if st.session_state.room_id is None:
                         priorities=priorities_value
                     )
 
-                    code = generate_invite_code()
-                    room_id = create_room(code)
-
-                    add_member(
-                        st.session_state.user_id,
-                        room_id,
-                        st.session_state.username
+                    room = services.create_room(
+                        st.session_state.user_id, st.session_state.username,
+                        sync=bump_room_sync_event
                     )
-                    bump_room_sync_event(
-                        room_id=room_id,
-                        event_type="room_created"
-                    )
+                    room_id, code = room["id"], room["invite_code"]
 
                     st.session_state.room_id = room_id
                     st.session_state.invite_code = code
@@ -2081,14 +2056,9 @@ if st.session_state.room_id is None:
                         if not can_join:
                             st.error(join_reason)
                         else:
-                            add_member(
-                                st.session_state.user_id,
-                                room_id,
-                                st.session_state.username
-                            )
-                            bump_room_sync_event(
-                                room_id=room_id,
-                                event_type="member_joined"
+                            services.join_room(
+                                room_id, st.session_state.user_id,
+                                st.session_state.username, sync=bump_room_sync_event
                             )
 
                             st.session_state.room_id = room_id
@@ -2189,23 +2159,9 @@ else:
                     if selected_scenario is None:
                         st.error("Please choose a scenario before creating a session.")
                     else:
-                        session_id = create_session_from_scenario(
-                            st.session_state.room_id,
-                            selected_scenario
-                        )
-
-                        members = get_members_by_room(st.session_state.room_id)
-
-                        if len(members) >= 1:
-                            assign_role(session_id, members[0][0], "role_a")
-
-                        if len(members) >= 2:
-                            assign_role(session_id, members[1][0], "role_b")
-
-                        bump_room_sync_event(
-                            room_id=st.session_state.room_id,
-                            session_id=session_id,
-                            event_type="scenario_session_created"
+                        services.create_scenario_session(
+                            st.session_state.room_id, selected_scenario,
+                            sync=bump_room_sync_event
                         )
                         st.rerun()
 
@@ -2230,22 +2186,12 @@ else:
         user_role = get_user_role(session_id, st.session_state.user_id)
 
         if user_role is None:
-            all_roles = get_all_roles_in_session(session_id)
-            assigned_role_names = [row[1] for row in all_roles]
-            role_assigned = False
-
-            if "role_a" not in assigned_role_names:
-                assign_role(session_id, st.session_state.user_id, "role_a")
-                role_assigned = True
-            elif "role_b" not in assigned_role_names:
-                assign_role(session_id, st.session_state.user_id, "role_b")
-                role_assigned = True
-
-            if role_assigned:
-                st.rerun()
-
-            st.error("This active session already has two assigned participants.")
-            st.stop()
+            try:
+                services.ensure_role(session_id, st.session_state.user_id)
+            except services.ApplicationError as exc:
+                st.error(str(exc))
+                st.stop()
+            st.rerun()
 
         user_role = get_user_role(session_id, st.session_state.user_id)
 

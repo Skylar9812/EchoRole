@@ -1,7 +1,7 @@
 """Thin adapter to the unchanged scenario library, imported from the repo root.
 
 Do not import the Streamlit entry point: its top-level code initializes the DB
-and renders UI. Stateful services are deliberately deferred to the next phase.
+and renders UI. Stateful routes use the shared application module.
 """
 from scenario_library import (
     get_scenario_by_id,
