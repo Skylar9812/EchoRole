@@ -37,7 +37,7 @@ def run():
         env = {**os.environ, 'ECHOROLE_DB_PATH': str(Path(temp) / 'transport.db'),
                'ECHOROLE_API_URL': f'http://127.0.0.1:{api_port}',
                'ECHOROLE_WEB_ORIGIN': origin, 'ECHOROLE_COOKIE_SECURE': 'false',
-               'NEXT_TELEMETRY_DISABLED': '1'}
+               'NEXT_TELEMETRY_DISABLED': '1', 'ECHOROLE_AI_PROVIDER': 'local'}
         node = os.environ.get('ECHOROLE_NODE') or shutil.which('node')
         assert node, 'Set ECHOROLE_NODE or add node to PATH'
         def start(name, command, cwd, health):
@@ -100,6 +100,32 @@ def run():
         outsider = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
         assert request('profiles', 'POST', {'display_name': 'Browser Bob'}, browser=outsider)[0] == 201
         assert request(f'rooms/{room["id"]}', browser=outsider)[0] == 403
+        assert request(f'rooms/{room["id"]}/join', 'POST', browser=outsider)[0] == 200
+        with urllib.request.urlopen(env['ECHOROLE_API_URL'] + '/api/v1/scenarios') as catalog:
+            scenario_id = json.loads(catalog.read())[0]['id']
+        status, session, _ = request(f'rooms/{room["id"]}/sessions', 'POST', {'scenario_id': scenario_id})
+        assert status == 201, session
+        sid = session['id']
+        own = request(f'sessions/{sid}/private')[1]
+        other = request(f'sessions/{sid}/private', browser=outsider)[1]
+        assert own['role_name'] == 'role_a' and other['role_name'] == 'role_b'
+        assert own['brief'] != other['brief']
+        chat = {'content': 'Live shared hello', 'request_id': 'transport-chat'}
+        first_message = request(f'rooms/{room["id"]}/messages', 'POST', chat)[1]
+        assert request(f'rooms/{room["id"]}/messages', 'POST', chat)[1] == first_message
+        coach = request(f'sessions/{sid}/coach/messages', 'POST', {'content': 'I am worried about how to talk calmly.', 'request_id': 'transport-coach', 'turn_index': 1})
+        assert coach[0] == 200 and coach[1]['state'] == 'completed', coach
+        assert request(f'sessions/{sid}/coach/messages', browser=outsider)[1] == []
+        assert request(f'sessions/{sid}/coach/requests')[1][0]['request_id'] == 'transport-coach'
+        action = {'turn_index': 1, 'action_text': 'I will ask if we can sit down tonight and discuss our plans.'}
+        waiting = request(f'sessions/{sid}/turn/actions', 'POST', action)
+        assert waiting[0] == 200 and waiting[1]['state'] == 'waiting_for_other', waiting
+        advanced = request(f'sessions/{sid}/turn/actions', 'POST', action, browser=outsider)
+        assert advanced[0] == 200 and advanced[1]['state'] == 'advanced', advanced
+        assert request(f'sessions/{sid}/turn/status?turn_index=1')[1]['state'] == 'advanced'
+        assert len(request(f'sessions/{sid}/progression')[1]) == 1
+        assert request(f'sessions/{sid}/suggestion')[1]['text']
+        print('PASS: live shared chat, private role/Coach isolation, action waiting, turn completion, progression and suggestions')
         assert request('identity', 'DELETE')[0] == 200
         assert request('me')[0] == 401
         print('PASS: HttpOnly transport, no token in JSON, refresh and API-restart recovery, CSRF, membership, allowlist, local sign-out')

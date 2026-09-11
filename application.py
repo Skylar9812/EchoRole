@@ -98,6 +98,8 @@ def create_scenario_session(room_id, scenario, *, sync=None, expected_session_id
         raise ApplicationError("Session changed; refresh before creating another session")
     if current is None and expected_session_id is not None:
         raise ApplicationError("Expected session does not exist")
+    if current and db.get_pending_turn_actions(current['id'], current['current_turn']):
+        raise ApplicationError('Resolve the pending turn before replacing this session')
     session_id = db.create_session_from_scenario(room_id, scenario)
     members = db.get_members_by_room(room_id)
     for member, role in zip(members, ("role_a", "role_b")):

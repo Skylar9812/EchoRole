@@ -6,6 +6,7 @@ provider can be plugged in without changing app.py.
 """
 
 import json
+from provider_boundary import mark_uncertain
 import http.client
 import os
 import re
@@ -2677,7 +2678,12 @@ class DeepSeekOpenAICompatibleProvider(AIProvider):
             response = connection.getresponse()
             response_body = response.read().decode("utf-8")
             elapsed_seconds = time.monotonic() - started_at
+            if response.status >= 500:
+                mark_uncertain()
             return response.status, response_body, elapsed_seconds
+        except Exception:
+            mark_uncertain()
+            raise
         finally:
             connection.close()
 

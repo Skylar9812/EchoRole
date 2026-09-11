@@ -4,6 +4,7 @@ from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 import application as services
 from backend.api import router
+from backend.interactions import router as interactive_router
 from backend.identity import load_signing_key
 import database as db
 import sqlite3
@@ -20,10 +21,17 @@ def create_app() -> FastAPI:
     application = FastAPI(
         title="EchoRole API",
         version="0.1.0",
-        description="Phase 2: durable local identity, authorized participant boundaries and atomic session setup.",
+        description="Phase 3: shared chat, private Coach and durable atomic turn progression.",
         lifespan=lifespan,
     )
     application.include_router(router, prefix="/api/v1")
+    application.include_router(interactive_router, prefix="/api/v1")
+
+    @application.middleware("http")
+    async def no_store(request, call_next):
+        response = await call_next(request)
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @application.exception_handler(services.ApplicationError)
     async def application_error(request, exc):

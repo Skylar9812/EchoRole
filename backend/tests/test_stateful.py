@@ -126,8 +126,10 @@ class StatefulTests(unittest.TestCase):
         namespace['init_db']()
         def schema(path):
             with closing(sqlite3.connect(path)) as conn:
-                return conn.execute("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name").fetchall()
+                return conn.execute("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE tbl_name != 'operation_journal' ORDER BY type, name").fetchall()
         self.assertEqual(schema(self.path), schema(baseline))
+        with closing(sqlite3.connect(self.path)) as conn:
+            self.assertEqual(conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='operation_journal'").fetchone()[0], 'operation_journal')
         services.initialize()
         self.assertEqual(schema(self.path), schema(baseline))
 

@@ -106,6 +106,22 @@ def init_db():
     cursor = conn.cursor()
     cursor.execute("PRAGMA journal_mode = WAL")
 
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS operation_journal (
+        operation_key TEXT PRIMARY KEY,
+        kind TEXT NOT NULL CHECK(kind IN ('chat', 'coach', 'turn')),
+        scope_id INTEGER NOT NULL,
+        user_id TEXT NOT NULL,
+        turn_index INTEGER NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('running', 'ready', 'completed', 'uncertain')),
+        attempt_id TEXT NOT NULL,
+        started_at REAL NOT NULL,
+        input_json TEXT NOT NULL,
+        result_json TEXT,
+        error TEXT NOT NULL DEFAULT ''
+    )
+    """)
+
     # rooms
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS rooms (
@@ -882,7 +898,7 @@ def create_session_from_scenario(room_id, scenario):
     )
 
 
-def get_session_by_room(room_id):
+def get_session_by_room(room_id, *, session_id=None):
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -901,11 +917,11 @@ def get_session_by_room(room_id):
             current_situation,
             created_at
         FROM sessions
-        WHERE room_id = ?
+        WHERE room_id = ? AND (? IS NULL OR id = ?)
         ORDER BY id DESC
         LIMIT 1
         """,
-        (room_id,)
+        (room_id, session_id, session_id)
     )
 
     row = cursor.fetchone()
@@ -1064,57 +1080,24 @@ def get_turn_history(session_id):
 
 
 def save_pending_turn_action(session_id, turn_index, user_id, role_name, action_text):
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    try:
-        cursor.execute(
-            """
-            SELECT id
-            FROM pending_turn_actions
-            WHERE session_id = ? AND turn_index = ? AND user_id = ?
-            LIMIT 1
-            """,
-            (session_id, turn_index, user_id)
+    with transaction():
+        room_id = get_session_room_id(session_id)
+        session = get_session_by_room(room_id) if room_id else None
+        if not session or session["id"] != session_id or session["current_turn"] != turn_index:
+            raise StateConflict("Stale turn")
+        if get_user_role(session_id, user_id) != role_name or user_id not in [m[0] for m in get_members_by_room(room_id)]:
+            raise StateConflict("Session participation required")
+        existing = get_pending_turn_action_for_user(session_id, turn_index, user_id, statuses=('pending', 'generating', 'consumed'))
+        if existing:
+            if existing['action_text'] != action_text:
+                raise StateConflict("Action already submitted; replacement is disabled")
+            return existing['id']
+        conn = get_connection()
+        cursor = conn.execute(
+            "INSERT INTO pending_turn_actions (session_id, turn_index, user_id, role_name, action_text, status) VALUES (?, ?, ?, ?, ?, 'pending')",
+            (session_id, turn_index, user_id, role_name, action_text),
         )
-        existing = cursor.fetchone()
-
-        if existing is None:
-            cursor.execute(
-                """
-                INSERT INTO pending_turn_actions (
-                    session_id,
-                    turn_index,
-                    user_id,
-                    role_name,
-                    action_text,
-                    status,
-                    consumed_at
-                )
-                VALUES (?, ?, ?, ?, ?, 'pending', NULL)
-                """,
-                (session_id, turn_index, user_id, role_name, action_text)
-            )
-            row_id = cursor.lastrowid
-        else:
-            row_id = existing["id"]
-            cursor.execute(
-                """
-                UPDATE pending_turn_actions
-                SET role_name = ?,
-                    action_text = ?,
-                    status = 'pending',
-                    consumed_at = NULL,
-                    created_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-                """,
-                (role_name, action_text, row_id)
-            )
-
-        conn.commit()
-        return row_id
-    finally:
-        conn.close()
+        return cursor.lastrowid
 
 
 def get_pending_turn_actions(session_id, turn_index, statuses=None):
@@ -1991,7 +1974,8 @@ def complete_joint_turn(
     cursor = conn.cursor()
 
     try:
-        cursor.execute("BEGIN IMMEDIATE")
+        if not conn.in_transaction:
+            cursor.execute("BEGIN IMMEDIATE")
 
         log_database_event(
             "complete_joint_turn_before_insert_history",
@@ -2198,5 +2182,20 @@ def get_session_room_id(session_id):
     try:
         row = conn.execute("SELECT room_id FROM sessions WHERE id = ?", (session_id,)).fetchone()
         return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def get_session_by_id(session_id):
+    room_id = get_session_room_id(session_id)
+    return get_session_by_room(room_id, session_id=session_id) if room_id else None
+
+
+def list_room_messages(room_id):
+    conn = get_connection()
+    try:
+        return [dict(row) for row in conn.execute(
+            "SELECT id, user_id, username, content, created_at FROM messages WHERE room_id=? ORDER BY id", (room_id,)
+        ).fetchall()]
     finally:
         conn.close()

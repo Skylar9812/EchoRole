@@ -1,7 +1,6 @@
-"""Reusable gates for future private brief, coach and suggestion routes.
+"""Reusable gates for participant-private brief, coach and suggestion routes.
 
-Future data queries must also be scoped by the returned participant user/role.
-No private route is published in Phase 2.
+Data queries must also be scoped by the returned participant user/role.
 """
 from dataclasses import dataclass
 from typing import Literal

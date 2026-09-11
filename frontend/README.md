@@ -1,7 +1,6 @@
 # EchoRole Next.js boundary
 
-The landing page remains unchanged. Phase 2 adds server handlers and credential
-transport only; no visual identity, lobby or session UI is implemented.
+The landing page remains unchanged. Phase 3 extends the existing server handlers and typed API contracts; no visual identity, lobby or session UI is implemented.
 
 ```powershell
 cd frontend
@@ -60,5 +59,26 @@ backend/.venv/Scripts/python frontend/tests/transport_smoke.py
 
 The smoke test starts both servers against temporary SQLite data and checks cookie
 flags, token omission, refresh/restart recovery, CSRF, authorization and sign-out.
-Set `ECHOROLE_NODE` to the Node executable if it is not on PATH. No UI or provider
-calls are involved; servers are stopped after verification.
+Set `ECHOROLE_NODE` to the Node executable if it is not on PATH. No visual UI is exercised; the existing local provider is used without external
+AI calls; servers are stopped after verification.
+
+
+Phase 3 forwards shared room messages and participant session routes for private
+briefs, Coach messages/request status/recovery, suggestions, turns/actions/completion/
+recovery and progression. See the backend README for JSON contracts. The browser
+still sends only its HttpOnly identity cookie; no caller-supplied user or role is
+forwarded as authority. The optional `turn_index` query is validated before forwarding.
+The explicit role-name private URL is intentionally not in the browser allowlist;
+browser clients use `/sessions/{id}/private` for their own role.
+
+Typed request/response contracts are exported by `src/lib/api.ts`. Keep chat/Coach
+`request_id` stable across a timeout. The server timeout is 120 seconds; a timeout
+is not proof that FastAPI stopped. Query the same request/turn status or resubmit
+the same logical request. Never automatically call a recovery URL. An `uncertain`
+state requires the user to acknowledge that an external AI call may be repeated,
+then submit the displayed `attempt_id`. `ready` Coach results can be persisted via
+its `/complete` URL without another provider call. No visual recovery UI has been
+built for Next.js yet; Streamlit includes the explicit recovery controls.
+
+The live transport smoke test also checks shared chat retries, role/Coach isolation,
+action waiting, exactly-once progression, and private suggestion retrieval.

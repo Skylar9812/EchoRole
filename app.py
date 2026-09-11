@@ -1,3 +1,8 @@
+from coach_context import (
+    normalize_app_text, is_ai_coach_context_prompt_message,
+    is_turn_action_validation_feedback_message, get_visible_ai_coach_history_entries,
+)
+import interaction_service as interactions
 from streamlit_autorefresh import st_autorefresh
 import base64
 from pathlib import Path
@@ -9,9 +14,6 @@ import uuid
 from datetime import datetime
 
 from ai_engine import (
-    build_turn_coach_prompt,
-    generate_dynamic_ai_feedback,
-    generate_next_situation_from_joint_actions,
     get_last_ai_debug_info,
     validate_turn_action,
 )
@@ -21,7 +23,6 @@ from database import (
     bump_room_event_version,
     add_member,
     remove_member,
-    add_message,
     get_messages_by_room,
     get_user_role,
     add_ai_message,
@@ -29,14 +30,9 @@ from database import (
     get_recent_ai_messages_for_user,
     has_ai_prompt_for_turn,
     get_turn_history,
-    save_pending_turn_action,
     get_pending_turn_actions_for_session_turn,
     get_pending_turn_action_for_user,
-    mark_pending_turn_actions_consumed,
-    reset_pending_turn_actions_to_pending,
     has_completed_turn,
-    claim_pending_turn_actions_for_generation,
-    complete_joint_turn,
     get_turn_suggestion,
     get_latest_story_state,
     get_recent_shared_chat_messages,
@@ -76,17 +72,6 @@ def short_debug_preview(text, limit=140):
     return value[: limit - 3] + "..."
 
 
-def normalize_app_text(value):
-    if value is None:
-        return ""
-
-    if isinstance(value, bytes):
-        normalized = value.decode("utf-8", errors="replace")
-    else:
-        normalized = str(value)
-
-    normalized = normalized.replace("\x00", "")
-    return normalized
 
 
 def is_truthy_debug_flag(value):
@@ -946,38 +931,8 @@ def render_ai_coach_context_cards(
     render_coach_reflection_prompt_card()
 
 
-def is_ai_coach_context_prompt_message(content, hidden_ai_prompt_content=None):
-    normalized_content = normalize_app_text(content).strip()
-    normalized_hidden_prompt = normalize_app_text(hidden_ai_prompt_content).strip()
-
-    if normalized_hidden_prompt and normalized_content == normalized_hidden_prompt:
-        return True
-
-    return (
-        normalized_content.startswith("Turn ")
-        and "Current situation:" in normalized_content
-        and "Your private role brief:" in normalized_content
-        and "Reflect on what matters most to you right now" in normalized_content
-    )
 
 
-def is_turn_action_validation_feedback_message(content):
-    normalized_content = normalize_app_text(content).strip()
-    if normalized_content == "":
-        return False
-
-    english_markers = (
-        "I cannot advance the story from this action yet:",
-        "Please describe one concrete action you take next, such as what you say, ask, offer, accept, refuse, or suggest.",
-        "Your action needs to be more concrete before the scenario can advance.",
-    )
-    chinese_markers = (
-        "这个行动目前还不能推进剧情：",
-        "请描述你接下来会采取的一个具体行动，比如你会说什么、询问什么、提供什么、接受什么、拒绝什么，或建议什么。",
-        "你的行动需要更具体一些，剧情才能继续推进。",
-    )
-
-    return normalized_content.startswith(english_markers + chinese_markers)
 
 
 def maybe_log_ai_coach_history_filter_event(
@@ -1130,66 +1085,6 @@ def render_ai_coach_messages(
     log_render_event("render_ai_coach_messages_exited")
 
 
-def get_visible_ai_coach_history_entries(
-    ai_messages,
-    *,
-    hidden_ai_prompt_content=None,
-    limit=8,
-    session_id=None,
-    user_id=None,
-    turn_index=None
-):
-    visible_messages = []
-    filtered_validation_count = 0
-    filtered_action_count = 0
-
-    for msg in ai_messages:
-        if len(msg) < 4:
-            continue
-
-        turn_index = msg[0]
-        sender = msg[2]
-        content = msg[3]
-        created_at = msg[4]
-
-        if (
-            sender == "ai"
-            and is_ai_coach_context_prompt_message(
-                content,
-                hidden_ai_prompt_content=hidden_ai_prompt_content
-            )
-        ):
-            continue
-
-        if sender == "action":
-            filtered_action_count += 1
-            continue
-
-        if sender == "ai" and is_turn_action_validation_feedback_message(content):
-            filtered_validation_count += 1
-            continue
-
-        visible_messages.append(
-            {
-                "turn_index": turn_index,
-                "sender": sender,
-                "content": normalize_app_text(content),
-                "created_at": created_at,
-            }
-        )
-
-    maybe_log_ai_coach_history_filter_event(
-        session_id=session_id,
-        user_id=user_id,
-        turn_index=turn_index,
-        filtered_validation_count=filtered_validation_count,
-        filtered_action_count=filtered_action_count,
-    )
-
-    if limit <= 0:
-        return visible_messages
-
-    return visible_messages[-limit:]
 
 
 def get_visible_ai_coach_debug(session_id, user_id, current_turn):
@@ -1363,250 +1258,6 @@ def load_pending_turn_state(*, session_id, turn_index, current_user_id):
     }
 
 
-def process_claimed_joint_turn(
-    *,
-    session_id,
-    current_turn,
-    submit_room_id,
-    evolved_current_session,
-    recent_turn_history,
-    actions_by_role,
-    submit_trace_id,
-    trigger_source="submit"
-):
-    role_a_action = normalize_app_text(
-        (actions_by_role.get("role_a") or {}).get("action_text")
-    )
-    role_b_action = normalize_app_text(
-        (actions_by_role.get("role_b") or {}).get("action_text")
-    )
-    if trigger_source == "render":
-        log_turn_action_event(
-            "joint_turn_generation_started_from_render",
-            submit_trace_id=submit_trace_id,
-            session_id=session_id,
-            turn_index=current_turn
-        )
-    generation_status = st.empty()
-    generation_status.caption("Generating next situation from both actions...")
-    log_turn_action_event(
-        "joint_turn_generation_started",
-        submit_trace_id=submit_trace_id,
-        session_id=session_id,
-        turn_index=current_turn
-    )
-    recent_shared_chat = get_recent_shared_chat_messages(
-        session_id=session_id,
-        limit=6
-    )
-    log_turn_action_event(
-        "story_progression_generation_started",
-        submit_trace_id=submit_trace_id,
-        session_id=session_id,
-        previous_turn_index=current_turn,
-        new_turn_index=current_turn + 1,
-        role_a_action_preview=short_debug_preview(role_a_action),
-        role_b_action_preview=short_debug_preview(role_b_action),
-        shared_chat_message_count=len(recent_shared_chat),
-        progression_history_count=len(recent_turn_history)
-    )
-    joint_turn_result = generate_next_situation_from_joint_actions(
-        current_session=evolved_current_session,
-        role_a_action=role_a_action,
-        role_b_action=role_b_action,
-        recent_turn_history=recent_turn_history,
-        recent_shared_chat=recent_shared_chat,
-        debug_trace_id=submit_trace_id
-    )
-    shared_situation = normalize_app_text(
-        (joint_turn_result or {}).get("shared_situation")
-        or (joint_turn_result or {}).get("next_situation")
-    )
-    role_a_perspective = normalize_app_text(
-        (joint_turn_result or {}).get("role_a_perspective")
-    )
-    role_b_perspective = normalize_app_text(
-        (joint_turn_result or {}).get("role_b_perspective")
-    )
-    next_decision_point = normalize_app_text(
-        (joint_turn_result or {}).get("next_decision_point")
-    )
-    updated_role_a_brief = normalize_app_text(
-        (joint_turn_result or {}).get("updated_role_a_brief")
-    )
-    updated_role_b_brief = normalize_app_text(
-        (joint_turn_result or {}).get("updated_role_b_brief")
-    )
-    role_a_suggestion = normalize_app_text(
-        (joint_turn_result or {}).get("role_a_suggestion")
-    )
-    role_b_suggestion = normalize_app_text(
-        (joint_turn_result or {}).get("role_b_suggestion")
-    )
-    log_turn_action_event(
-        "evolved_role_brief_generated",
-        submit_trace_id=submit_trace_id,
-        session_id=session_id,
-        new_turn_index=current_turn + 1,
-        role_a_brief_preview=short_debug_preview(updated_role_a_brief),
-        role_b_brief_preview=short_debug_preview(updated_role_b_brief)
-    )
-    log_turn_action_event(
-        "joint_turn_generation_completed",
-        submit_trace_id=submit_trace_id,
-        next_situation_length=len((shared_situation or "").strip()),
-        next_situation_preview=short_debug_preview(shared_situation)
-    )
-    log_turn_action_event(
-        "story_progression_generation_completed",
-        submit_trace_id=submit_trace_id,
-        session_id=session_id,
-        previous_turn_index=current_turn,
-        new_turn_index=current_turn + 1,
-        role_a_action_preview=short_debug_preview(role_a_action),
-        role_b_action_preview=short_debug_preview(role_b_action),
-        shared_chat_message_count=len(recent_shared_chat),
-        progression_history_count=len(recent_turn_history),
-        shared_situation_preview=short_debug_preview(shared_situation),
-        next_decision_point_preview=short_debug_preview(next_decision_point)
-    )
-
-    if (shared_situation or "").strip() == "":
-        reset_pending_turn_actions_to_pending(session_id, current_turn)
-        st.error("The next situation could not be generated. Please try again.")
-        return False
-
-    action_summary = (
-        f"Role A action: {role_a_action}\n\n"
-        f"Role B action: {role_b_action}"
-    )
-    log_turn_action_event(
-        "joint_turn_persistence_started",
-        submit_trace_id=submit_trace_id,
-        session_id=session_id,
-        turn_index=current_turn
-    )
-    persisted = complete_joint_turn(
-        session_id=session_id,
-        expected_turn=current_turn,
-        submitted_action_summary=action_summary,
-        resulting_situation=shared_situation,
-        role_a_perspective=role_a_perspective,
-        role_b_perspective=role_b_perspective,
-        next_decision_point=next_decision_point,
-        role_a_brief=updated_role_a_brief,
-        role_b_brief=updated_role_b_brief,
-        role_a_suggestion=role_a_suggestion,
-        role_b_suggestion=role_b_suggestion
-    )
-
-    if persisted:
-        log_turn_action_event(
-            "evolved_role_brief_saved",
-            submit_trace_id=submit_trace_id,
-            session_id=session_id,
-            new_turn_index=current_turn + 1,
-            role_a_brief_preview=short_debug_preview(updated_role_a_brief),
-            role_b_brief_preview=short_debug_preview(updated_role_b_brief)
-        )
-        if updated_role_a_brief:
-            log_turn_action_event(
-                "role_brief_turn_saved",
-                submit_trace_id=submit_trace_id,
-                session_id=session_id,
-                role_name="role_a",
-                brief_turn_number=current_turn,
-                brief_preview=short_debug_preview(updated_role_a_brief)
-            )
-        if updated_role_b_brief:
-            log_turn_action_event(
-                "role_brief_turn_saved",
-                submit_trace_id=submit_trace_id,
-                session_id=session_id,
-                role_name="role_b",
-                brief_turn_number=current_turn,
-                brief_preview=short_debug_preview(updated_role_b_brief)
-            )
-        bump_room_sync_event(
-            room_id=submit_room_id,
-            session_id=session_id,
-            event_type="joint_turn_progressed"
-        )
-        log_turn_action_event(
-            "joint_turn_suggestions_saved",
-            submit_trace_id=submit_trace_id,
-            next_turn_index=current_turn + 1,
-            role_a_suggestion_preview=short_debug_preview(role_a_suggestion),
-            role_b_suggestion_preview=short_debug_preview(role_b_suggestion)
-        )
-        try:
-            for pending_action in actions_by_role.values():
-                add_ai_message(
-                    session_id=session_id,
-                    turn_index=current_turn,
-                    user_id=pending_action["user_id"],
-                    role_name=pending_action["role_name"],
-                    sender="action",
-                    content=pending_action["action_text"]
-                )
-        except Exception as exc:
-            log_turn_action_event(
-                "joint_turn_action_message_save_failed",
-                submit_trace_id=submit_trace_id,
-                exception_type=type(exc).__name__,
-                exception_message=str(exc)
-            )
-
-        log_turn_action_event(
-            "pending_turn_actions_consumed",
-            submit_trace_id=submit_trace_id,
-            session_id=session_id,
-            turn_index=current_turn
-        )
-        reloaded_session = get_session_by_room(submit_room_id)
-        reloaded_turn = None
-        reloaded_situation_preview = ""
-        if reloaded_session is not None:
-            reloaded_turn = reloaded_session.get("current_turn")
-            reloaded_situation_preview = short_debug_preview(
-                reloaded_session.get("current_situation", "")
-            )
-        log_turn_action_event(
-            "joint_turn_persistence_completed",
-            submit_trace_id=submit_trace_id,
-            reloaded_current_turn=reloaded_turn,
-            reloaded_current_situation_preview=reloaded_situation_preview
-        )
-        log_turn_action_event(
-            "story_progression_saved",
-            submit_trace_id=submit_trace_id,
-            session_id=session_id,
-            previous_turn_index=current_turn,
-            new_turn_index=current_turn + 1,
-            role_a_action_preview=short_debug_preview(role_a_action),
-            role_b_action_preview=short_debug_preview(role_b_action),
-            shared_chat_message_count=len(recent_shared_chat),
-            progression_history_count=len(recent_turn_history),
-            shared_situation_preview=short_debug_preview(shared_situation),
-            next_decision_point_preview=short_debug_preview(next_decision_point)
-        )
-        st.success("Both actions were applied. The story advanced to the next turn.")
-        st.rerun()
-
-    if has_completed_turn(session_id, current_turn):
-        mark_pending_turn_actions_consumed(session_id, current_turn)
-        log_turn_action_event(
-            "joint_turn_already_completed_skip_generation",
-            submit_trace_id=submit_trace_id,
-            session_id=session_id,
-            turn_index=current_turn
-        )
-        st.info("This turn was already completed elsewhere. Reloading the latest scenario state.")
-        st.rerun()
-
-    reset_pending_turn_actions_to_pending(session_id, current_turn)
-    st.error("The joint turn could not be saved. Please try again.")
-    return False
 
 
 def set_turn_action_validation_feedback(*, session_id, turn_index, user_id, message):
@@ -2195,13 +1846,8 @@ else:
 
         user_role = get_user_role(session_id, st.session_state.user_id)
 
-        private_role_brief = ""
-        if user_role == "role_a":
-            private_role_brief = role_a_brief
-        elif user_role == "role_b":
-            private_role_brief = role_b_brief
-        else:
-            st.warning("Your role has not been assigned yet.")
+        participant_private = interactions.private_state(session_id, st.session_state.user_id)
+        private_role_brief = participant_private["brief"]
 
         recent_turn_history = get_turn_history(session_id)[-3:]
         latest_story_state = get_latest_story_state(session_id)
@@ -2214,20 +1860,11 @@ else:
             (current_story_state or {}).get("shared_situation")
             or current_session["current_situation"]
         )
-        current_role_perspective = ""
-        if current_story_state is not None:
-            if user_role == "role_a":
-                current_role_perspective = normalize_app_text(
-                    current_story_state.get("role_a_perspective")
-                )
-            elif user_role == "role_b":
-                current_role_perspective = normalize_app_text(
-                    current_story_state.get("role_b_perspective")
-                )
+        current_role_perspective = participant_private["pressure"]
         current_next_decision_point = normalize_app_text(
             (current_story_state or {}).get("next_decision_point")
         )
-        current_role_brief_history = get_role_brief_history(session_id, user_role)
+        current_role_brief_history = participant_private["brief_history"]
         role_brief_history_signature = (
             session_id,
             user_role,
@@ -2256,16 +1893,8 @@ else:
                 current_role_brief_history[-1].get("brief_text")
             )
 
-        evolved_current_session = dict(current_session)
-        if user_role == "role_a" and private_role_brief:
-            evolved_current_session["role_a_brief"] = private_role_brief
-            evolved_current_session["role_a_brief_history_entries"] = current_role_brief_history
-        elif user_role == "role_b" and private_role_brief:
-            evolved_current_session["role_b_brief"] = private_role_brief
-            evolved_current_session["role_b_brief_history_entries"] = current_role_brief_history
-        current_user_turn_suggestion = normalize_app_text(
-            get_turn_suggestion(session_id, current_turn, user_role)
-        )
+        evolved_current_session = interactions.evolved_session(current_session)
+        current_user_turn_suggestion = interactions.suggestion(session_id, st.session_state.user_id)["text"]
         if current_user_turn_suggestion:
             log_turn_action_event(
                 "ai_suggestion_loaded_for_current_user",
@@ -2274,12 +1903,7 @@ else:
                 role_name=user_role,
                 suggestion_preview=short_debug_preview(current_user_turn_suggestion)
             )
-        turn_prompt = build_turn_coach_prompt(
-            evolved_current_session,
-            user_role,
-            user_profile=user_profile,
-            recent_turn_history=recent_turn_history
-        )
+        turn_prompt = interactions.coach_prompt(session_id, st.session_state.user_id)
         raw_recent_ai_coach_history = get_recent_ai_messages_for_user(
             session_id=session_id,
             user_id=st.session_state.user_id,
@@ -2384,22 +2008,8 @@ else:
                     st.session_state.role_brief_turn_render_signatures = list(rendered_signatures)
 
         # 绗竴娆¤繘鍏ュ綋鍓?stage 鏃讹紝鑷姩鍐欏叆棣栨潯 AI prompt
-        if user_role is not None and not has_ai_prompt_for_turn(
-            session_id,
-            current_turn,
-            st.session_state.user_id
-        ):
-            if (turn_prompt or "").strip():
-                add_ai_message_with_logging(
-                    branch_name="turn_prompt_autoinsert",
-                    session_id=session_id,
-                    turn_index=current_turn,
-                    user_id=st.session_state.user_id,
-                    role_name=user_role,
-                    sender="ai",
-                    content=turn_prompt
-                )
-                st.rerun()
+        if user_role is not None:
+            interactions.ensure_coach_prompt(session_id, st.session_state.user_id)
 
         ai_messages = get_ai_messages(
             session_id=session_id,
@@ -2504,446 +2114,34 @@ else:
             )
 
             if ai_submit:
-                ai_input_value = (ai_input or "").strip()
-
-                if ai_input_value == "":
-                    st.session_state.ai_coach_submit_in_progress = False
-                    st.error("AI reply cannot be empty.")
-                else:
-                    submit_user_id = st.session_state.user_id
-                    submit_trace_id = str(uuid.uuid4())[:8]
-                    log_ai_submit_event(
-                        "ai_coach_submit_started",
-                        submit_trace_id=submit_trace_id,
-                        session_id=session_id,
-                        turn_index=current_turn,
-                        user_id=submit_user_id
+                try:
+                    outcome = interactions.send_coach(
+                        session_id, st.session_state.user_id, current_turn,
+                        ai_input, str(uuid.uuid4())
                     )
-                    base_debug_snapshot = {
-                        "session_id": session_id,
-                        "turn_index": current_turn,
-                        "user_id": submit_user_id,
-                        "submit_trace_id": submit_trace_id,
-                        "provider": "pending",
-                        "provider_stage": "not_started",
-                        "llm_call_attempted": False,
-                        "llm_call_succeeded": False,
-                        "llm_http_status": None,
-                        "llm_timeout_seconds": None,
-                        "reply_extracted": False,
-                        "reply_length": 0,
-                        "reply_preview": "",
-                        "content_type": "pending",
-                        "used_fallback": False,
-                        "fallback_reason": "",
-                        "ai_reply_saved": False,
-                        "ai_reply_message_id": None,
-                        "saved_reply_preview": "",
-                        "saved_reply_length": 0,
-                        "loaded_message_count_after_save": 0,
-                        "loaded_ai_message_count_after_save": 0,
-                        "rendered_message_count": len(ai_messages),
-                        "rendered_ai_message_count": sum(
-                            1 for msg in ai_messages if msg[0] == "ai"
-                        ),
-                        "pipeline_stage": "submit_clicked",
-                        "pipeline_error": "",
-                        "submitted_reflection_preview": short_debug_preview(ai_input_value),
-                    }
-                    st.session_state.ai_coach_submit_in_progress = True
-                    st.session_state.ai_coach_force_reload = False
-                    st.session_state.ai_coach_force_reload_context = None
-                    st.session_state.last_ai_coach_debug = dict(base_debug_snapshot)
-
-                    user_message_id = None
-                    ai_reply_message_id = None
-                    ai_feedback = ""
-                    engine_debug_info = {}
-                    post_return_debug_snapshot = None
-
-                    try:
-                        log_ai_submit_event(
-                            "saving_user_message",
-                            submit_trace_id=submit_trace_id,
-                            session_id=session_id,
-                            turn_index=current_turn
-                        )
-                        update_ai_coach_debug_snapshot(pipeline_stage="saving_user_message")
-                        user_message_id = add_ai_message(
-                            session_id=session_id,
-                            turn_index=current_turn,
-                            user_id=submit_user_id,
-                            role_name=user_role,
-                            sender="user",
-                            content=ai_input_value
-                        )
-                        log_ai_submit_event(
-                            "user_message_saved",
-                            submit_trace_id=submit_trace_id,
-                            user_message_id=user_message_id
-                        )
-                        update_ai_coach_debug_snapshot(
-                            pipeline_stage="user_message_saved",
-                            user_message_id=user_message_id
-                        )
-
-                        log_ai_submit_event(
-                            "calling_generate_dynamic_ai_feedback",
-                            submit_trace_id=submit_trace_id,
-                            reflection_length=len(ai_input_value)
-                        )
-                        update_ai_coach_debug_snapshot(
-                            pipeline_stage="calling_generate_dynamic_ai_feedback"
-                        )
-                        thinking_status = None
-                        try:
-                            log_ai_submit_event(
-                                "before_entering_spinner",
-                                submit_trace_id=submit_trace_id
-                            )
-                            thinking_status = middle_col.empty()
-                            thinking_status.caption("AI Coach is thinking...")
-                            log_ai_submit_event(
-                                "after_entering_spinner",
-                                submit_trace_id=submit_trace_id
-                            )
-                            log_ai_submit_event(
-                                "before_generate_dynamic_ai_feedback_call",
-                                submit_trace_id=submit_trace_id
-                            )
-                            latest_user_profile = get_user_profile(submit_user_id)
-                            log_ai_submit_event(
-                                "ai_coach_profile_loaded_for_submit",
-                                submit_trace_id=submit_trace_id,
-                                profile_updated_at=(latest_user_profile or {}).get("updated_at"),
-                                profile_preview=short_debug_preview(
-                                    normalize_app_text(
-                                        (latest_user_profile or {}).get("priorities")
-                                    )
-                                )
-                            )
-                            log_ai_submit_event(
-                                "ai_coach_history_loaded_for_submit",
-                                submit_trace_id=submit_trace_id,
-                                ai_coach_history_message_count=len(recent_ai_coach_history),
-                                latest_history_sender=(
-                                    recent_ai_coach_history[-1]["sender"]
-                                    if recent_ai_coach_history
-                                    else ""
-                                )
-                            )
-                            ai_feedback = generate_dynamic_ai_feedback(
-                                user_role=user_role,
-                                user_text=ai_input_value,
-                                current_turn=current_turn,
-                                current_situation=current_situation,
-                                current_session=current_session,
-                                user_profile=latest_user_profile,
-                                recent_turn_history=recent_turn_history,
-                                recent_coach_history=recent_ai_coach_history,
-                                debug_trace_id=submit_trace_id
-                            )
-                            log_ai_submit_event(
-                                "after_generate_dynamic_ai_feedback_call",
-                                submit_trace_id=submit_trace_id,
-                                reply_type=type(ai_feedback).__name__
-                            )
-                        except BaseException as exc:
-                            post_call_error = f"{type(exc).__name__}: {exc}"
-                            log_ai_submit_event(
-                                "ai_feedback_post_call_exception",
-                                submit_trace_id=submit_trace_id,
-                                exception_type=type(exc).__name__,
-                                exception_message=str(exc),
-                                boundary="generate_dynamic_ai_feedback"
-                            )
-                            queue_ai_coach_state_update(
-                                submit_user_id,
-                                {
-                                    **base_debug_snapshot,
-                                    "pipeline_stage": "ai_feedback_post_call_exception",
-                                    "pipeline_error": post_call_error,
-                                    "user_message_id": user_message_id,
-                                }
-                            )
-                            raise
-                        log_ai_submit_event(
-                            "before_ai_feedback_returned_log",
-                            submit_trace_id=submit_trace_id
-                        )
-                        ai_feedback = normalize_app_text(ai_feedback)
-                        log_ai_submit_event(
-                            "ai_feedback_returned",
-                            submit_trace_id=submit_trace_id,
-                            reply_length=len((ai_feedback or "").strip()),
-                            reply_type=type(ai_feedback).__name__
-                        )
-                        post_return_debug_snapshot = {
-                            **base_debug_snapshot,
-                            "pipeline_stage": "ai_feedback_returned",
-                            "user_message_id": user_message_id,
-                            "saved_reply_preview": short_debug_preview(ai_feedback),
-                            "saved_reply_length": len((ai_feedback or "").strip()),
-                        }
-                        log_ai_submit_event(
-                            "post_return_debug_buffered",
-                            submit_trace_id=submit_trace_id,
-                            reply_length=post_return_debug_snapshot["saved_reply_length"]
-                        )
-
-                        log_ai_submit_event(
-                            "capturing_engine_debug",
-                            submit_trace_id=submit_trace_id
-                        )
-                        engine_debug_info = get_last_ai_debug_info()
-                        log_ai_submit_event(
-                            "engine_debug_captured",
-                            submit_trace_id=submit_trace_id,
-                            engine_provider=engine_debug_info.get("provider"),
-                            engine_provider_stage=engine_debug_info.get("provider_stage"),
-                            engine_reply_length=engine_debug_info.get("reply_length")
-                        )
-                        post_return_debug_snapshot.update(engine_debug_info)
-                        post_return_debug_snapshot.update({
-                            "pipeline_stage": "updating_debug_snapshot",
-                            "saved_reply_preview": short_debug_preview(ai_feedback),
-                            "saved_reply_length": len((ai_feedback or "").strip()),
-                        })
-                        log_ai_submit_event(
-                            "debug_snapshot_updated",
-                            submit_trace_id=submit_trace_id,
-                            provider=post_return_debug_snapshot.get("provider"),
-                            provider_stage=post_return_debug_snapshot.get("provider_stage")
-                        )
-
-                        log_ai_submit_event(
-                            "saving_ai_reply",
-                            submit_trace_id=submit_trace_id
-                        )
-                        log_ai_submit_event(
-                            "after_saving_ai_reply_marker",
-                            submit_trace_id=submit_trace_id
-                        )
-                        try:
-                            post_return_debug_snapshot["pipeline_stage"] = "saving_ai_reply"
-                            log_ai_submit_event(
-                                "after_setting_saving_ai_reply_stage",
-                                submit_trace_id=submit_trace_id,
-                                pipeline_stage=post_return_debug_snapshot.get("pipeline_stage")
-                            )
-                            log_ai_submit_event(
-                                "before_coach_reply_save_branch_context",
-                                submit_trace_id=submit_trace_id
-                            )
-                            coach_reply_save_branch_name = "coach_reply_save_v3"
-                            log_ai_submit_event(
-                                "after_coach_reply_save_branch_name",
-                                submit_trace_id=submit_trace_id,
-                                branch_name=coach_reply_save_branch_name
-                            )
-                            coach_reply_save_branch_context = {}
-
-                            def assign_coach_reply_context_field(field_name, value_factory):
-                                log_ai_submit_event(
-                                    f"context_field_{field_name}",
-                                    submit_trace_id=submit_trace_id
-                                )
-                                try:
-                                    field_value = value_factory()
-                                    coach_reply_save_branch_context[field_name] = field_value
-                                    return field_value
-                                except BaseException as exc:
-                                    field_error = f"{type(exc).__name__}: {exc}"
-                                    if isinstance(post_return_debug_snapshot, dict):
-                                        post_return_debug_snapshot.update({
-                                            "pipeline_stage": "coach_reply_branch_context_field_exception",
-                                            "pipeline_error": f"{field_name}: {field_error}",
-                                            "saved_reply_preview": short_debug_preview(ai_feedback),
-                                            "saved_reply_length": len((ai_feedback or "").strip()),
-                                            "context_field_name": field_name,
-                                        })
-                                        queue_ai_coach_state_update(
-                                            submit_user_id,
-                                            post_return_debug_snapshot
-                                        )
-                                    log_ai_submit_event(
-                                        "coach_reply_branch_context_field_exception",
-                                        submit_trace_id=submit_trace_id,
-                                        field_name=field_name,
-                                        exception_type=type(exc).__name__,
-                                        exception_message=str(exc)
-                                    )
-                                    raise
-
-                            assign_coach_reply_context_field(
-                                "runtime_marker",
-                                lambda: APP_RUNTIME_MARKER
-                            )
-                            assign_coach_reply_context_field(
-                                "branch_name",
-                                lambda: coach_reply_save_branch_name
-                            )
-                            assign_coach_reply_context_field(
-                                "session_id",
-                                lambda: session_id
-                            )
-                            assign_coach_reply_context_field(
-                                "turn_index",
-                                lambda: current_turn
-                            )
-                            assign_coach_reply_context_field(
-                                "user_id",
-                                lambda: submit_user_id
-                            )
-                            assign_coach_reply_context_field(
-                                "role_name",
-                                lambda: user_role
-                            )
-                            assign_coach_reply_context_field(
-                                "sender",
-                                lambda: "ai"
-                            )
-                            assign_coach_reply_context_field(
-                                "ai_feedback_type",
-                                lambda: type(ai_feedback).__name__
-                            )
-                            assign_coach_reply_context_field(
-                                "ai_feedback_length",
-                                lambda: len((ai_feedback or "").strip())
-                            )
-                            log_ai_submit_event(
-                                "after_coach_reply_save_branch_context",
-                                submit_trace_id=submit_trace_id,
-                                branch_name=coach_reply_save_branch_context.get("branch_name"),
-                                context_user_id=coach_reply_save_branch_context.get("user_id"),
-                                ai_feedback_length=coach_reply_save_branch_context.get("ai_feedback_length")
-                            )
-                            log_ai_submit_event(
-                                "before_active_ai_reply_save_branch_entered",
-                                submit_trace_id=submit_trace_id,
-                                branch_name=coach_reply_save_branch_name
-                            )
-                        except Exception as exc:
-                            pre_save_boundary_error = f"{type(exc).__name__}: {exc}"
-                            if isinstance(post_return_debug_snapshot, dict):
-                                post_return_debug_snapshot.update({
-                                    "pipeline_stage": "coach_reply_branch_context_exception",
-                                    "pipeline_error": pre_save_boundary_error,
-                                    "saved_reply_preview": short_debug_preview(ai_feedback),
-                                    "saved_reply_length": len((ai_feedback or "").strip()),
-                                })
-                            log_ai_submit_event(
-                                "coach_reply_branch_context_exception",
-                                submit_trace_id=submit_trace_id,
-                                exception_type=type(exc).__name__,
-                                exception_message=str(exc)
-                            )
-                            raise
-                        log_ai_submit_event(
-                            "active_ai_reply_save_branch_entered",
-                            submit_trace_id=submit_trace_id,
-                            **coach_reply_save_branch_context
-                        )
-                        try:
-                            ai_reply_message_id = add_ai_message_with_logging(
-                                branch_name="coach_reply_save_v3",
-                                session_id=session_id,
-                                turn_index=current_turn,
-                                user_id=submit_user_id,
-                                role_name=user_role,
-                                sender="ai",
-                                content=ai_feedback
-                            )
-                        except Exception as exc:
-                            add_ai_message_error = f"{type(exc).__name__}: {exc}"
-                            post_return_debug_snapshot.update({
-                                "pipeline_stage": "add_ai_message_call_exception",
-                                "pipeline_error": add_ai_message_error,
-                                "saved_reply_preview": short_debug_preview(ai_feedback),
-                                "saved_reply_length": len((ai_feedback or "").strip()),
-                            })
-                            log_ai_submit_event(
-                                "add_ai_message_call_exception",
-                                submit_trace_id=submit_trace_id,
-                                exception_type=type(exc).__name__,
-                                exception_message=str(exc)
-                            )
-                            raise
-                        log_ai_submit_event(
-                            "ai_reply_saved",
-                            submit_trace_id=submit_trace_id,
-                            ai_reply_message_id=ai_reply_message_id
-                        )
-                        post_return_debug_snapshot.update({
-                            "pipeline_stage": "ai_reply_saved",
-                            "ai_reply_message_id": ai_reply_message_id,
-                            "ai_reply_saved": ai_reply_message_id is not None,
-                        })
-
-                        log_ai_submit_event(
-                            "reloading_ai_messages",
-                            submit_trace_id=submit_trace_id
-                        )
-                        post_return_debug_snapshot["pipeline_stage"] = "reloading_ai_messages"
-                        saved_ai_messages = get_ai_messages(
-                            session_id=session_id,
-                            turn_index=current_turn,
-                            user_id=submit_user_id
-                        )
-                        loaded_ai_message_count = sum(
-                            1 for msg in saved_ai_messages if msg[0] == "ai"
-                        )
-                        log_ai_submit_event(
-                            "ai_messages_reloaded",
-                            submit_trace_id=submit_trace_id,
-                            loaded_message_count=len(saved_ai_messages),
-                            loaded_ai_message_count=loaded_ai_message_count
-                        )
-                        post_return_debug_snapshot.update({
-                            "pipeline_stage": "ai_messages_reloaded",
-                            "user_message_id": user_message_id,
-                            "ai_reply_message_id": ai_reply_message_id,
-                            "ai_reply_saved": ai_reply_message_id is not None,
-                            "saved_reply_preview": short_debug_preview(ai_feedback),
-                            "saved_reply_length": len((ai_feedback or "").strip()),
-                            "loaded_message_count_after_save": len(saved_ai_messages),
-                            "loaded_ai_message_count_after_save": loaded_ai_message_count,
-                        })
-                        log_ai_submit_event(
-                            "ai_coach_post_save_rerun_called",
-                            submit_trace_id=submit_trace_id
-                        )
+                    if outcome["state"] == "completed":
                         st.rerun()
-                    except Exception as exc:
-                        exception_message = f"{type(exc).__name__}: {exc}"
-                        exception_stage = (
-                            (post_return_debug_snapshot or {}).get("pipeline_stage")
-                            or "exception"
-                        )
-                        log_ai_submit_event(
-                            "exception",
-                            submit_trace_id=submit_trace_id,
-                            pipeline_error=exception_message,
-                            user_message_id=user_message_id,
-                            ai_reply_message_id=ai_reply_message_id,
-                            pipeline_stage=exception_stage
-                        )
-                        exception_snapshot = {
-                            **(post_return_debug_snapshot or base_debug_snapshot),
-                            **engine_debug_info,
-                            "user_message_id": user_message_id,
-                            "ai_reply_message_id": ai_reply_message_id,
-                            "ai_reply_saved": False,
-                            "saved_reply_preview": short_debug_preview(ai_feedback),
-                            "saved_reply_length": len((ai_feedback or "").strip()),
-                            "pipeline_stage": exception_stage,
-                            "pipeline_error": exception_message,
-                        }
-                        queue_ai_coach_state_update(
-                            submit_user_id,
-                            exception_snapshot
-                        )
-                        st.session_state.ai_coach_submit_in_progress = False
+                    st.warning("Coach result is uncertain. Use the recovery control below; do not resend as a new message.")
+                except (services.ApplicationError, ValueError) as exc:
+                    st.error(str(exc))
+                finally:
+                    st.session_state.ai_coach_submit_in_progress = False
+
+        pending_coach = interactions.pending_coach_request(session_id, st.session_state.user_id)
+        if pending_coach:
+            with middle_col:
+                if pending_coach["state"] == "uncertain":
+                    acknowledged = st.checkbox("I understand retrying may repeat the external Coach call", key="coach_recovery_ack")
+                    if st.button("Recover Coach request", disabled=not acknowledged):
+                        interactions.recover_coach(session_id, st.session_state.user_id,
+                            pending_coach["request_id"], pending_coach["attempt_id"], True)
+                        st.rerun()
+                elif pending_coach["state"] == "ready":
+                    if st.button("Save completed Coach reply"):
+                        interactions.persist_coach_request(session_id, st.session_state.user_id, pending_coach["request_id"])
+                        st.rerun()
+                else:
+                    st.info("Coach generation is in progress. Refresh to check its status.")
 
         with middle_col:
             render_coach_reflection_prompt_card()
@@ -2959,455 +2157,46 @@ else:
                 role_name=user_role
             )
 
-        pending_turn_state = load_pending_turn_state(
-            session_id=session_id,
-            turn_index=current_turn,
-            current_user_id=st.session_state.user_id
-        )
-        active_pending_actions = pending_turn_state["active_pending_actions"]
-        current_user_pending_action = pending_turn_state["current_user_pending_action"]
-        other_pending_action = pending_turn_state["other_pending_action"]
-        other_participant_submitted = pending_turn_state["other_participant_submitted"]
-        actions_by_role = pending_turn_state["actions_by_role"]
-        render_waiting_for_generation = False
-
-        both_pending_actions_ready_for_render = (
-            len(active_pending_actions) >= 2
-            and "role_a" in actions_by_role
-            and "role_b" in actions_by_role
-            and (actions_by_role.get("role_a") or {}).get("status") == "pending"
-            and (actions_by_role.get("role_b") or {}).get("status") == "pending"
-        )
-        if both_pending_actions_ready_for_render and not has_completed_turn(session_id, current_turn):
-            render_trace_id = f"render-{str(uuid.uuid4())[:8]}"
+        turn_state = interactions.turn_status(session_id, st.session_state.user_id, current_turn)
+        if turn_state["submitted"] and turn_state["other_submitted"] and turn_state["state"] != "uncertain":
             try:
-                log_turn_action_event(
-                    "pending_turn_actions_both_ready_from_render",
-                    submit_trace_id=render_trace_id,
-                    session_id=session_id,
-                    turn_index=current_turn
-                )
-                log_turn_action_event(
-                    "pending_turn_actions_claim_attempted_from_render",
-                    submit_trace_id=render_trace_id,
-                    session_id=session_id,
-                    turn_index=current_turn
-                )
-                claim_result = claim_pending_turn_actions_for_generation(
-                    session_id=session_id,
-                    turn_index=current_turn
-                )
-                claim_status = claim_result.get("status")
-
-                if claim_status == "already_completed":
-                    mark_pending_turn_actions_consumed(session_id, current_turn)
-                    log_turn_action_event(
-                        "joint_turn_already_completed_skip_generation",
-                        submit_trace_id=render_trace_id,
-                        session_id=session_id,
-                        turn_index=current_turn
-                    )
-                    st.info("This turn already advanced. Reloading the latest scenario state.")
+                turn_state = interactions.advance_turn(session_id, st.session_state.user_id, current_turn)
+                if turn_state["state"] == "advanced":
                     st.rerun()
-
-                if claim_status == "ready":
-                    log_turn_action_event(
-                        "pending_turn_actions_claim_succeeded_from_render",
-                        submit_trace_id=render_trace_id,
-                        session_id=session_id,
-                        turn_index=current_turn
-                    )
-                    progression_completed = process_claimed_joint_turn(
-                        session_id=session_id,
-                        current_turn=current_turn,
-                        submit_room_id=st.session_state.room_id,
-                        evolved_current_session=evolved_current_session,
-                        recent_turn_history=recent_turn_history,
-                        actions_by_role=claim_result.get("actions") or {},
-                        submit_trace_id=render_trace_id,
-                        trigger_source="render"
-                    )
-                    if progression_completed is False:
-                        pending_turn_state = load_pending_turn_state(
-                            session_id=session_id,
-                            turn_index=current_turn,
-                            current_user_id=st.session_state.user_id
-                        )
-                        active_pending_actions = pending_turn_state["active_pending_actions"]
-                        current_user_pending_action = pending_turn_state["current_user_pending_action"]
-                        other_pending_action = pending_turn_state["other_pending_action"]
-                        other_participant_submitted = pending_turn_state["other_participant_submitted"]
-                        actions_by_role = pending_turn_state["actions_by_role"]
-                    render_waiting_for_generation = False
-                else:
-                    log_turn_action_event(
-                        "pending_turn_actions_claim_failed_from_render",
-                        submit_trace_id=render_trace_id,
-                        session_id=session_id,
-                        turn_index=current_turn,
-                        claim_status=claim_status
-                    )
-                    render_waiting_for_generation = True
-                    pending_turn_state = load_pending_turn_state(
-                        session_id=session_id,
-                        turn_index=current_turn,
-                        current_user_id=st.session_state.user_id
-                    )
-                    active_pending_actions = pending_turn_state["active_pending_actions"]
-                    current_user_pending_action = pending_turn_state["current_user_pending_action"]
-                    other_pending_action = pending_turn_state["other_pending_action"]
-                    other_participant_submitted = pending_turn_state["other_participant_submitted"]
-                    actions_by_role = pending_turn_state["actions_by_role"]
-            except Exception as exc:
-                if not has_completed_turn(session_id, current_turn):
-                    reset_pending_turn_actions_to_pending(session_id, current_turn)
-                log_turn_action_event(
-                    "render_joint_turn_generation_exception",
-                    submit_trace_id=render_trace_id,
-                    exception_type=type(exc).__name__,
-                    exception_message=str(exc),
-                    source="render_joint_generation"
-                )
-                render_waiting_for_generation = True
-                pending_turn_state = load_pending_turn_state(
-                    session_id=session_id,
-                    turn_index=current_turn,
-                    current_user_id=st.session_state.user_id
-                )
-                active_pending_actions = pending_turn_state["active_pending_actions"]
-                current_user_pending_action = pending_turn_state["current_user_pending_action"]
-                other_pending_action = pending_turn_state["other_pending_action"]
-                other_participant_submitted = pending_turn_state["other_participant_submitted"]
-                actions_by_role = pending_turn_state["actions_by_role"]
-                st.error("Something went wrong while processing the joint turn. Please try again.")
-
-        should_poll_for_pending_turn = (
-            (current_user_pending_action is not None and other_pending_action is None)
-            or (current_user_pending_action is None and other_pending_action is not None)
-            or (current_user_pending_action is not None and other_pending_action is not None)
-            or (
-                current_user_pending_action is not None
-                and current_user_pending_action.get("status") == "generating"
-            )
-            or (
-                other_pending_action is not None
-                and other_pending_action.get("status") == "generating"
-            )
-            or render_waiting_for_generation
-        )
+            except (services.ApplicationError, ValueError) as exc:
+                st.error(str(exc))
         room_refresh_enabled = True
-        if should_poll_for_pending_turn:
-            room_refresh_interval_ms = ACTIVE_SESSION_PENDING_REFRESH_INTERVAL_MS
-            room_refresh_reason = "pending_turn_wait_or_generation"
-        else:
-            room_refresh_interval_ms = ACTIVE_SESSION_IDLE_REFRESH_INTERVAL_MS
-            room_refresh_reason = "active_session_sync"
-
-        maybe_log_pending_turn_ui_status(
-            session_id=session_id,
-            turn_index=current_turn,
-            current_user_pending_action=current_user_pending_action,
-            other_pending_action=other_pending_action,
-            pending_count=len(active_pending_actions),
-            force=should_show_ai_coach_debug()
-        )
-
+        room_refresh_interval_ms = ACTIVE_SESSION_PENDING_REFRESH_INTERVAL_MS if turn_state["submitted"] else ACTIVE_SESSION_IDLE_REFRESH_INTERVAL_MS
+        room_refresh_reason = "active_session_sync"
         with right_col.container(border=True):
             st.subheader("Submit Turn Action")
             st.caption("Use one concrete action to push the shared story into the next turn.")
-            if current_user_pending_action is not None:
-                clear_turn_action_validation_feedback(
-                    session_id=session_id,
-                    turn_index=current_turn,
-                    user_id=st.session_state.user_id
-                )
-            validation_feedback_container = st.empty()
-            render_turn_action_validation_feedback(
-                validation_feedback_container,
-                session_id=session_id,
-                turn_index=current_turn,
-                user_id=st.session_state.user_id
-            )
-
-            with st.container(border=True):
-                with st.form("turn_action_form", clear_on_submit=True):
-                    action_input = st.text_area(
-                        "What action do you want to take next?",
-                        placeholder="例如：我会问他今晚能不能坐下来谈一谈。 / For example: I will ask if we can sit down tonight and talk honestly.",
-                        disabled=current_user_pending_action is not None
-                    )
-                    action_submit = st.form_submit_button(
-                        "Submit Action and Advance Turn",
-                        disabled=current_user_pending_action is not None
-                    )
-
-                    if action_submit:
-                        turn_action_trace_id = str(uuid.uuid4())[:8]
-                        action_input_value = (action_input or "").strip()
-                        submit_user_id = st.session_state.user_id
-                        submit_room_id = st.session_state.room_id
-                        log_turn_action_event(
-                            "submit_turn_action_started",
-                            submit_trace_id=turn_action_trace_id,
-                            session_id=session_id,
-                            turn_index=current_turn,
-                            user_id=submit_user_id,
-                            role_name=user_role,
-                            action_length=len(action_input_value)
-                        )
-
-                        if action_input_value == "":
-                            clear_turn_action_validation_feedback(
-                                session_id=session_id,
-                                turn_index=current_turn,
-                                user_id=submit_user_id
-                            )
-                            st.error("Action cannot be empty.")
-                        else:
-                            recent_turn_history = get_turn_history(session_id)[-3:]
-                            log_turn_action_event(
-                                "submit_turn_action_local_validation_started",
-                                submit_trace_id=turn_action_trace_id,
-                                session_id=session_id,
-                                turn_index=current_turn,
-                                history_count=len(recent_turn_history)
-                            )
-                            validation = validate_turn_action(
-                                action_text=action_input_value,
-                                current_session=current_session,
-                                user_role=user_role
-                            )
-
-                            if not validation["is_valid"]:
-                                feedback_message = normalize_app_text(validation.get("feedback"))
-                                log_turn_action_event(
-                                    "submit_turn_action_local_validation_rejected",
-                                    submit_trace_id=turn_action_trace_id,
-                                    reason=short_debug_preview(feedback_message)
-                                )
-                                if feedback_message:
-                                    set_turn_action_validation_feedback(
-                                        session_id=session_id,
-                                        turn_index=current_turn,
-                                        user_id=submit_user_id,
-                                        message=feedback_message
-                                    )
-                                else:
-                                    set_turn_action_validation_feedback(
-                                        session_id=session_id,
-                                        turn_index=current_turn,
-                                        user_id=submit_user_id,
-                                        message="Your action needs to be more concrete before the scenario can advance."
-                                    )
-                                render_turn_action_validation_feedback(
-                                    validation_feedback_container,
-                                    session_id=session_id,
-                                    turn_index=current_turn,
-                                    user_id=submit_user_id,
-                                    force=True
-                                )
-                            else:
-                                log_turn_action_event(
-                                    "submit_turn_action_local_validation_accepted",
-                                    submit_trace_id=turn_action_trace_id
-                                )
-                                clear_turn_action_validation_feedback(
-                                    session_id=session_id,
-                                    turn_index=current_turn,
-                                    user_id=submit_user_id
-                                )
-                                try:
-                                    log_turn_action_event(
-                                        "pending_turn_action_save_started",
-                                        submit_trace_id=turn_action_trace_id,
-                                        session_id=session_id,
-                                        turn_index=current_turn,
-                                        user_id=submit_user_id,
-                                        role_name=user_role,
-                                        action_length=len(action_input_value)
-                                    )
-                                    pending_action_id = save_pending_turn_action(
-                                        session_id=session_id,
-                                        turn_index=current_turn,
-                                        user_id=submit_user_id,
-                                        role_name=user_role,
-                                        action_text=action_input_value
-                                    )
-                                    log_turn_action_event(
-                                        "pending_turn_action_saved",
-                                        submit_trace_id=turn_action_trace_id,
-                                        pending_action_id=pending_action_id
-                                    )
-                                    bump_room_sync_event(
-                                        room_id=submit_room_id,
-                                        session_id=session_id,
-                                        event_type="turn_action_submitted"
-                                    )
-                                    refreshed_pending_actions = get_pending_turn_actions_for_session_turn(
-                                        session_id,
-                                        current_turn
-                                    )
-                                    refreshed_actions_by_role = {
-                                        action["role_name"]: action
-                                        for action in refreshed_pending_actions
-                                    }
-
-                                    if has_completed_turn(session_id, current_turn):
-                                        mark_pending_turn_actions_consumed(session_id, current_turn)
-                                        log_turn_action_event(
-                                            "joint_turn_already_completed_skip_generation",
-                                            submit_trace_id=turn_action_trace_id,
-                                            session_id=session_id,
-                                            turn_index=current_turn
-                                        )
-                                        st.info("This turn already advanced. Reloading the latest scenario state.")
-                                        st.rerun()
-
-                                    if "role_a" not in refreshed_actions_by_role or "role_b" not in refreshed_actions_by_role:
-                                        log_turn_action_event(
-                                            "pending_turn_action_saved_waiting_for_other",
-                                            submit_trace_id=turn_action_trace_id,
-                                            session_id=session_id,
-                                            turn_index=current_turn
-                                        )
-                                        st.success("Your action has been submitted. Waiting for the other participant.")
-                                        st.rerun()
-
-                                    log_turn_action_event(
-                                        "pending_turn_actions_both_ready_after_save",
-                                        submit_trace_id=turn_action_trace_id,
-                                        session_id=session_id,
-                                        turn_index=current_turn
-                                    )
-                                    claim_result = claim_pending_turn_actions_for_generation(
-                                        session_id=session_id,
-                                        turn_index=current_turn
-                                    )
-                                    claim_status = claim_result.get("status")
-
-                                    if claim_status == "already_completed":
-                                        mark_pending_turn_actions_consumed(session_id, current_turn)
-                                        log_turn_action_event(
-                                            "joint_turn_already_completed_skip_generation",
-                                            submit_trace_id=turn_action_trace_id,
-                                            session_id=session_id,
-                                            turn_index=current_turn
-                                        )
-                                        st.info("This turn already advanced. Reloading the latest scenario state.")
-                                        st.rerun()
-
-                                    if claim_status != "ready":
-                                        st.success("Your action has been submitted. Waiting for the other participant.")
-                                        st.rerun()
-
-                                    actions_by_role = claim_result.get("actions") or {}
-                                    log_turn_action_event(
-                                        "pending_turn_actions_both_ready",
-                                        submit_trace_id=turn_action_trace_id,
-                                        session_id=session_id,
-                                        turn_index=current_turn
-                                    )
-                                    process_claimed_joint_turn(
-                                        session_id=session_id,
-                                        current_turn=current_turn,
-                                        submit_room_id=submit_room_id,
-                                        evolved_current_session=evolved_current_session,
-                                        recent_turn_history=recent_turn_history,
-                                        actions_by_role=actions_by_role,
-                                        submit_trace_id=turn_action_trace_id,
-                                        trigger_source="submit"
-                                    )
-                                except Exception as exc:
-                                    if not has_completed_turn(session_id, current_turn):
-                                        reset_pending_turn_actions_to_pending(session_id, current_turn)
-                                    log_turn_action_event(
-                                        "submit_turn_action_exception",
-                                        submit_trace_id=turn_action_trace_id,
-                                        exception_type=type(exc).__name__,
-                                        exception_message=str(exc)
-                                    )
-                                    st.error("Something went wrong while processing the joint turn. Please try again.")
-
-            with st.container(border=True):
-                st.markdown("**Turn Submission Status**")
-                st.write(
-                    f"**You:** {'Submitted' if current_user_pending_action is not None else 'Not yet submitted'}"
-                )
-                st.write(
-                    f"**Other participant:** {'Submitted' if other_participant_submitted else 'Waiting'}"
-                )
-                if current_user_pending_action is not None:
-                    st.write(
-                        f"**Your submitted action:** {normalize_app_text(current_user_pending_action.get('action_text'))}"
-                    )
-                if other_pending_action is not None:
-                    st.write("**Other participant's action:**")
-                    with st.container(border=True):
-                        st.write(normalize_app_text(other_pending_action.get("action_text")))
-
-            if current_user_pending_action is not None:
-                maybe_log_pending_turn_wait_event(
-                    "pending_turn_action_current_user_already_submitted",
-                    signature=(
-                        session_id,
-                        current_turn,
-                        "current_user_submitted",
-                        current_user_pending_action.get("status"),
-                        other_participant_submitted,
-                    ),
-                    session_id=session_id,
-                    turn_index=current_turn,
-                    status=current_user_pending_action.get("status"),
-                    force=should_show_ai_coach_debug()
-                )
-                if (
-                    current_user_pending_action.get("status") == "generating"
-                    or render_waiting_for_generation
-                ):
-                    st.info("Waiting for story generation...")
-                elif other_participant_submitted:
-                    st.info("Your action has been submitted. Waiting for the story to advance.")
-                else:
-                    st.info("Your action has been submitted. Waiting for the other participant.")
-            elif other_pending_action is not None:
-                maybe_log_pending_turn_wait_event(
-                    "pending_turn_action_other_action_visible",
-                    signature=(
-                        session_id,
-                        current_turn,
-                        "other_visible",
-                        other_pending_action.get("role_name"),
-                        short_debug_preview(other_pending_action.get("action_text")),
-                    ),
-                    session_id=session_id,
-                    turn_index=current_turn,
-                    other_role_name=other_pending_action.get("role_name"),
-                    other_action_preview=short_debug_preview(other_pending_action.get("action_text")),
-                    force=should_show_ai_coach_debug()
-                )
-                maybe_log_pending_turn_wait_event(
-                    "pending_turn_action_current_user_can_respond",
-                    signature=(
-                        session_id,
-                        current_turn,
-                        "current_user_can_respond",
-                        other_pending_action.get("role_name"),
-                        other_pending_action.get("status"),
-                    ),
-                    session_id=session_id,
-                    turn_index=current_turn,
-                    other_role_name=other_pending_action.get("role_name"),
-                    force=should_show_ai_coach_debug()
-                )
-                st.info("The other participant has already acted this turn:")
-                with st.container(border=True):
-                    st.write(normalize_app_text(other_pending_action.get("action_text")))
-                st.caption("Now choose how your character responds.")
-
-            st.caption("The story advances only after both participants submit valid actions for this turn.")
-
-            if st.button("Reload Turn", key="active_reload_turn"):
-                st.rerun()
+            with st.form("turn_action_form", clear_on_submit=True):
+                action_input = st.text_area("What action do you want to take next?", disabled=turn_state["submitted"])
+                action_submit = st.form_submit_button("Submit Action and Advance Turn", disabled=turn_state["submitted"])
+                if action_submit:
+                    try:
+                        result = interactions.submit_action(session_id, st.session_state.user_id, current_turn, action_input)
+                        if result["state"] == "advanced":
+                            st.success("Both actions were applied. The story advanced to the next turn.")
+                        st.rerun()
+                    except (services.ApplicationError, ValueError) as exc:
+                        st.error(str(exc))
+            st.markdown("**Turn Submission Status**")
+            st.write(f"**You:** {'Submitted' if turn_state['submitted'] else 'Not yet submitted'}")
+            st.write(f"**Other participant:** {'Submitted' if turn_state['other_submitted'] else 'Waiting'}")
+            if turn_state["own_action"]:
+                st.write(f"**Your submitted action:** {turn_state['own_action']}")
+            if turn_state["state"] == "uncertain":
+                st.warning("Generation outcome is uncertain. No automatic provider retry will occur.")
+                acknowledged = st.checkbox("I understand retrying may repeat the external story call", key="turn_recovery_ack")
+                if st.button("Recover turn generation", disabled=not acknowledged):
+                    interactions.recover_turn(session_id, st.session_state.user_id, current_turn, turn_state["attempt_id"], True)
+                    st.rerun()
+            elif turn_state["state"] == "generating":
+                st.info("Waiting for story generation...")
+            elif turn_state["state"] == "waiting_for_other":
+                st.info("Your action has been submitted. Waiting for the other participant.")
 
     if current_session is not None:
         with right_col.container(border=True):
@@ -3436,16 +2225,9 @@ else:
                     if new_message_value == "":
                         st.error("Message cannot be empty.")
                     else:
-                        add_message(
-                            st.session_state.room_id,
-                            st.session_state.user_id,
-                            st.session_state.username,
-                            new_message_value
-                        )
-                        bump_room_sync_event(
-                            room_id=st.session_state.room_id,
-                            session_id=session_id,
-                            event_type="shared_chat_message_sent"
+                        interactions.send_chat(
+                            st.session_state.room_id, st.session_state.user_id,
+                            new_message_value, str(uuid.uuid4())
                         )
                         st.rerun()
 
@@ -3477,15 +2259,9 @@ else:
                         if new_message_value == "":
                             st.error("Message cannot be empty.")
                         else:
-                            add_message(
-                                st.session_state.room_id,
-                                st.session_state.user_id,
-                                st.session_state.username,
-                                new_message_value
-                            )
-                            bump_room_sync_event(
-                                room_id=st.session_state.room_id,
-                                event_type="shared_chat_message_sent"
+                            interactions.send_chat(
+                                st.session_state.room_id, st.session_state.user_id,
+                                new_message_value, str(uuid.uuid4())
                             )
                             st.rerun()
 

@@ -16,9 +16,9 @@ async function handle(request: NextRequest, context: Context) {
   const method = request.method;
   // Exact allowlist: this is not an arbitrary authenticated reverse proxy.
   const allowed = method === "GET"
-    ? /^(me|rooms\/[1-9]\d*(\/(members|session))?)$/.test(path)
+    ? /^(me|rooms\/[1-9]\d*(\/(members|session|messages))?|sessions\/[1-9]\d*\/(private|suggestion|progression|turn(\/status)?|coach\/(messages|requests(\/[A-Za-z0-9_-]+)?)))$/.test(path)
     : method === "POST"
-      ? /^(profiles|rooms|rooms\/[1-9]\d*\/(join|sessions))$/.test(path)
+      ? /^(profiles|rooms|rooms\/[1-9]\d*\/(join|sessions|messages)|sessions\/[1-9]\d*\/(turn\/(actions|complete|recover)|coach\/(messages|requests\/[A-Za-z0-9_-]+\/(recover|complete))))$/.test(path)
       : method === "DELETE" && path === "identity";
   if (!allowed) return json({ detail: "Not found" }, 404);
   if (method !== "GET") {
@@ -40,9 +40,11 @@ async function handle(request: NextRequest, context: Context) {
       const existing = await participantApi("me", "GET", token);
       return json(await existing.json(), existing.status);
     }
-    const body = method === "POST" && (path === "profiles" || path.endsWith("/sessions"))
-      ? await request.text() : undefined;
-    const upstream = await participantApi(path, method as "GET" | "POST", token, body);
+    const body = method === "POST" ? (await request.text() || undefined) : undefined;
+    const turnIndex = request.nextUrl.searchParams.get("turn_index");
+    if (turnIndex !== null && !/^[1-9]\d*$/.test(turnIndex)) return json({ detail: "Invalid turn index" }, 422);
+    const upstreamPath = turnIndex ? `${path}?turn_index=${turnIndex}` : path;
+    const upstream = await participantApi(upstreamPath, method as "GET" | "POST", token, body);
     const data = await upstream.json();
     if (path === "profiles" && upstream.ok) {
       const { access_token, token_type: _tokenType, ...profile } = data;

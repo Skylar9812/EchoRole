@@ -1,4 +1,4 @@
-# EchoRole FastAPI boundary — Phase 2
+# EchoRole FastAPI boundary — Phase 3
 
 Run from the repository root with Python 3.10+:
 
@@ -10,12 +10,12 @@ backend/.venv/Scripts/python -m unittest discover -s backend/tests -v
 ```
 
 `application.py` is shared by Streamlit and FastAPI. FastAPI never imports
-`app.py`, AI, or RAG. Its lifespan calls the same initialization entry point as
-Streamlit. Imports do not open SQLite. `database.DB_NAME` defaults to the absolute
+`app.py`. AI/RAG are loaded lazily by the shared interactive service. The FastAPI
+lifespan calls the same initialization entry point as Streamlit. Imports do not open SQLite. `database.DB_NAME` defaults to the absolute
 repository `echorole.db`; set `ECHOROLE_DB_PATH` before process startup to select
-an alternate file. Use the same absolute path for both entry points. Existing
-schema and initialization SQL are preserved. Phase 2 wraps stateful helpers in
-a shared SQLite transaction; see the migration plan for retry semantics.
+an alternate file. Use the same absolute path for both entry points. Phase 3 adds
+only `operation_journal` to the existing schema, as explicitly approved. Existing tables and uniqueness indexes are unchanged; see the migration
+plan for claim, recovery and retry semantics.
 
 All paths below have prefix `/api/v1`:
 
@@ -38,7 +38,7 @@ caller-selected user ID. The API persists a random signing key beside the databa
 at `<database path>.identity-key`, atomically publishing it on first startup.
 Alternatively configure `ECHOROLE_IDENTITY_SECRET` with at least 32 random bytes
 represented as a string, consistently across workers. Keys are ignored by Git.
-No API credentials are stored in a new database table.
+No API credentials are stored in the operation journal.
 
 `GET /me` recovers the same profile after restart with the existing credential.
 Browser callers should use the Next.js `/api/echorole/*` handlers, which keep the
@@ -65,15 +65,15 @@ restoration, UI feedback, sync callbacks and reruns.
 
 `backend/authorization.py` provides room-member, session-participant and role-owner
 dependencies. A session participant needs both current room membership and an
-assignment in that exact session. No private brief/coach/suggestion routes are
-published yet. Future data queries must use the dependency's user and role scope.
+assignment in that exact session. Private brief/Coach/suggestion routes use the
+dependency's authenticated user and role; request bodies cannot override them.
 
 SQLite `BEGIN IMMEDIATE` now covers membership checks/insertion, session setup,
 role allocation and event versions in each shared service operation. Exceptions
 roll back the entire operation. Busy/locked API writes return 503 with Retry-After.
-No database constraints or tables were added; raw SQL bypassing these helpers is
-not protected by a new uniqueness constraint. Existing duplicate data is not
-rewritten. No AI, chat, actions, turns or UI workflows were migrated.
+The new operation journal has a unique operation key and checked lifecycle states.
+Legacy uniqueness indexes still protect actions, history, stories and suggestions.
+Do not bypass the shared interactive service with legacy raw claim/reset helpers.
 
 This is local development authentication: key or cookie theft permits
 impersonation; no password/account recovery or individual token revocation exists.
@@ -81,7 +81,71 @@ Losing/expiring the cookie cannot be repaired using a public UUID. Key rotation
 invalidates all issued credentials. Use loopback HTTP only for development, and
 HTTPS/Secure cookies and real authentication before external exposure.
 
-Tests use disposable databases and compare sqlite_master against the original
-initialization implementation. Install Streamlit and streamlit-autorefresh in the
+Tests use disposable databases, verify the old schema is unchanged apart from
+the approved operation journal, and verify in-place legacy upgrades preserve data. Install Streamlit and streamlit-autorefresh in the
 legacy environment to run `python -m streamlit run app.py`; they are not backend
 runtime dependencies.
+
+
+Phase 3 interactive endpoints (prefix `/api/v1`):
+
+| Method | Path | Contract |
+| --- | --- | --- |
+| GET/POST | `/rooms/{room_id}/messages` | Ordered room chat; POST `{content, request_id}` |
+| GET | `/sessions/{session_id}/private` | Own evolved brief/history, role pressure and decision point |
+| GET | `/sessions/{session_id}/roles/{role_name}/private` | Same own-role projection; another role returns 403 |
+| GET/POST | `/sessions/{session_id}/coach/messages` | Own visible messages; POST `{content, request_id, turn_index}` |
+| GET | `/sessions/{session_id}/coach/requests` | Own durable request states, including interrupted requests |
+| GET | `/sessions/{session_id}/coach/requests/{request_id}` | Own request state/result |
+| POST | `/sessions/{session_id}/coach/requests/{request_id}/complete` | Persist an already saved reply, without another provider call |
+| POST | `/sessions/{session_id}/coach/requests/{request_id}/recover` | `{attempt_id, acknowledge_uncertain: true}` |
+| GET | `/sessions/{session_id}/suggestion` | Own current-turn suggestion, generated with the joint story |
+| GET | `/sessions/{session_id}/turn`, `/sessions/{session_id}/turn/status` | Current situation, own action and submission flags |
+| POST | `/sessions/{session_id}/turn/actions` | `{turn_index, action_text}`; may complete the joint turn |
+| POST | `/sessions/{session_id}/turn/complete` | `{turn_index}`; claim once or persist a saved result |
+| POST | `/sessions/{session_id}/turn/recover` | `{turn_index, attempt_id, acknowledge_uncertain: true}` |
+| GET | `/sessions/{session_id}/progression` | Shared resulting situations in turn order |
+
+GET Coach messages and turn/status accept optional positive `turn_index`.
+All session endpoints require both room membership and an assignment in that exact
+session. Shared projections never serialize private briefs, Coach content, role
+perspectives, suggestions or another participant's pending action. Initial hidden
+Coach prompts/action records/validation notices are filtered from visible chat.
+All API responses disable caching.
+
+Chat and Coach request IDs must be 1–128 letters/digits/underscore/hyphen. Keep the
+same ID and payload on retry. Conflicting reuse returns 409. A different ID means
+a new message; the API does not deduplicate identical text sent intentionally twice.
+Accepted actions are immutable (matching Streamlit's disabled submit form). Exact
+replays of completed actions return `advanced`; different stale submissions return
+409. Replacing a session with pending actions is blocked.
+
+A normal completed generation runs once; SQLite atomically commits turn history,
+story state, both private suggestions, action records, consumption, event version,
+turn advancement and journal completion. Generated results are durably saved before
+this final transaction, allowing recovery from a later persistence failure.
+
+A provider exception, network loss/server error observed through the existing
+transport, or a claim older than 15 minutes is `uncertain`. Ordinary requests do not
+invoke the provider again. Recovery requires the current attempt ID and explicit
+acknowledgement; it creates a new fenced attempt using the frozen original inputs.
+A late response from the old attempt cannot overwrite the new result. Uncertainty
+cannot guarantee the external provider did no work: recovery may repeat that work,
+but database completion/advancement remains exactly once. Recovery while an attempt
+is still running and not expired returns 409. Existing local/missing-key fallback
+and all prompts remain available. The journal holds sensitive captured context;
+there is no raw-journal endpoint.
+
+Suggestions use the existing joint-generation output. Turn 1 may have no suggestion;
+there is no invented standalone suggestion prompt or independent suggestion call.
+`ai_messages.py` remains an unmodified diagnostic script; importing it would open a
+relative database. Services reuse the existing `database.py` AI-message helpers.
+
+Run the offline active Streamlit check from the repository root:
+
+```powershell
+backend/.venv/Scripts/python -m backend.tests.streamlit_smoke
+```
+
+It uses the existing local AI provider and disposable SQLite data, exercising chat,
+Coach, submission/waiting, joint advancement and evolved role/suggestion rendering.
