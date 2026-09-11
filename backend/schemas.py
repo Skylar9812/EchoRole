@@ -65,3 +65,10 @@ class ScenarioPreview(BaseModel):
     context: str
     conflict: str
     opening_situation: str
+
+class RoomCreate(BaseModel):
+    request_id: str | None = Field(default=None, pattern=r'^[A-Za-z0-9_-]{1,128}$')
+
+
+class JoinCode(BaseModel):
+    invite_code: str = Field(min_length=1, max_length=128)

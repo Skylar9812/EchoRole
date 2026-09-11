@@ -149,3 +149,44 @@ polling and typed status handling, stable client request IDs, and explicit recov
 acknowledgement. Do not turn transport timeouts into automatic recovery. Production
 exposure still needs real auth/revocation, an admission policy and HTTPS. No other
 infrastructure is required for this local-development Phase 3 foundation.
+
+## Phase 4 — functional Next.js frontend
+
+Continued from `d9a9c94` on `migration/nextjs-fastapi`. The complete requested
+API-backed flow now runs on `/`, with plain functional sections and no final visual
+redesign. UI UX Pro Max was not used; its local files remain uncommitted.
+
+Implemented profile creation/editing, create/invite join, lobby/member updates,
+scenario filtering/preview/setup/replacement, active shared situation, own private
+brief/history/pressure/decision point, private Coach/messages/request recovery and
+suggestions, shared chat, immutable actions, waiting/generation/explicit uncertain
+recovery, turn advance, progression history and leave/rejoin. No peer-feedback API
+was invented; that Streamlit-only functionality remains outside this phase's flow.
+
+Typed browser contracts/client are separate from server transport. Polling runs
+non-overlapping cycles every 2.5 seconds after completion, pauses when hidden,
+and resumes on visibility/online/manual refresh and mutations. Identity/room epochs
+fence late responses and mixed-turn snapshots are retried. Private projections are
+never written to browser storage. Saved outbound retry payloads are private to the
+tab and participant; see frontend/README.md for retention and identity limitations.
+
+Chat/Coach use saved UUID request IDs; room creation gains atomic deterministic
+request replay without schema changes. Session setup retains original expected
+session ID and scenario; actions retain original turn/text. Recovery always needs
+explicit acknowledgement/current attempt; transport timeout never regenerates AI.
+Natural state operations retain idempotent semantics. First-profile response loss
+before receipt of the HttpOnly cookie can still orphan a profile; no credential
+recovery shortcut was added.
+
+Verification: production build and TypeScript check; 40 backend tests; real
+Next.js/FastAPI transport smoke; Streamlit active-session smoke; two isolated
+Chromium contexts with the local provider and disposable data. UI coverage includes
+private role/Coach separation, shared chat response loss plus reload/replay producing
+one message, first-action waiting, second-action advancement to turn 2, progression,
+refresh restoration and leave/member polling. Uncertain UI acknowledgement/payload
+uses a controlled browser response fixture; durable uncertainty/fencing remains
+covered by backend tests. No paid AI calls, push, merge or deployment.
+
+Before visual redesign: agree on whether a later functional scope should expose
+Streamlit peer feedback/points. The requested Phase 4 flow is otherwise available.
+Production identity/revocation/admission/HTTPS work remains separate from visual work.

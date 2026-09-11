@@ -1,3 +1,12 @@
-/* Basic document readability only. Product design is intentionally deferred. */
-body { margin: 0; font-family: system-ui, sans-serif; line-height: 1.6; }
-main { max-width: 48rem; margin: 3rem auto; padding: 0 1.5rem; }
+/* Plain functional layout; visual redesign is a later phase. */
+body { margin: 0; font-family: system-ui, sans-serif; line-height: 1.6; color: #202020; background: #fff; }
+main { max-width: 54rem; margin: 2rem auto; padding: 0 1rem; }
+section, details { border: 1px solid #bbb; padding: 1rem; margin: 1rem 0; }
+label { display: block; margin: .75rem 0; }
+input:not([type=checkbox]), textarea, select { display: block; box-sizing: border-box; width: 100%; max-width: 100%; padding: .5rem; font: inherit; }
+textarea { min-height: 6rem; }
+button { padding: .5rem .8rem; margin: .35rem .5rem .35rem 0; font: inherit; cursor: pointer; }
+button:disabled { cursor: default; }
+.text { white-space: pre-wrap; overflow-wrap: anywhere; }
+[role=alert] { border-left: 4px solid #a22; padding: .5rem 1rem; }
+:focus-visible { outline: 3px solid #265db1; outline-offset: 2px; }

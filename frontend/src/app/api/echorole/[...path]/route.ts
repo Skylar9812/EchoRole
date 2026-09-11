@@ -16,9 +16,9 @@ async function handle(request: NextRequest, context: Context) {
   const method = request.method;
   // Exact allowlist: this is not an arbitrary authenticated reverse proxy.
   const allowed = method === "GET"
-    ? /^(me|rooms\/[1-9]\d*(\/(members|session|messages))?|sessions\/[1-9]\d*\/(private|suggestion|progression|turn(\/status)?|coach\/(messages|requests(\/[A-Za-z0-9_-]+)?)))$/.test(path)
+    ? /^(scenarios|me|rooms\/[1-9]\d*(\/(members|session|messages))?|sessions\/[1-9]\d*\/(private|suggestion|progression|turn(\/status)?|coach\/(messages|requests(\/[A-Za-z0-9_-]+)?)))$/.test(path)
     : method === "POST"
-      ? /^(profiles|rooms|rooms\/[1-9]\d*\/(join|sessions|messages)|sessions\/[1-9]\d*\/(turn\/(actions|complete|recover)|coach\/(messages|requests\/[A-Za-z0-9_-]+\/(recover|complete))))$/.test(path)
+      ? /^(profiles|me|rooms|rooms\/join|rooms\/[1-9]\d*\/(join|leave|sessions|messages)|sessions\/[1-9]\d*\/(turn\/(actions|complete|recover)|coach\/(messages|requests\/[A-Za-z0-9_-]+\/(recover|complete))))$/.test(path)
       : method === "DELETE" && path === "identity";
   if (!allowed) return json({ detail: "Not found" }, 404);
   if (method !== "GET") {
@@ -33,7 +33,7 @@ async function handle(request: NextRequest, context: Context) {
     return response;
   }
   const token = request.cookies.get(identityCookie)?.value;
-  if (!token && path !== "profiles") return json({ detail: "Identity required" }, 401);
+  if (!token && path !== "profiles" && path !== "scenarios") return json({ detail: "Identity required" }, 401);
   try {
     // Repeated profile requests recover the cookie's identity, never overwrite it.
     if (path === "profiles" && token) {

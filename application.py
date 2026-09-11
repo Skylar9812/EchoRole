@@ -160,3 +160,46 @@ def start_session(room_id, user_id, scenario_id, expected_session_id=None):
     require_member(room_id, user_id)
     create_scenario_session(room_id, scenario_id, expected_session_id=expected_session_id)
     return public_session(room_id)
+
+@db.atomic
+def create_room_retry_safe(user_id, request_id=None):
+    if not request_id:
+        return create_room(user_id, get_user_profile(user_id)['display_name'])
+    import hashlib
+    code = hashlib.sha256(f'{user_id}:{request_id}'.encode()).hexdigest()[:24].upper()
+    existing = db.get_room_by_code(code)
+    if existing:
+        require_member(existing[0], user_id)
+        return room_state(existing[0])
+    room_id = db.create_room(code)
+    db.add_member(user_id, room_id, get_user_profile(user_id)['display_name'])
+    db.bump_room_event_version(room_id, 'room_created')
+    return room_state(room_id)
+
+
+@db.atomic
+def join_by_code(code, user_id):
+    room = db.get_room_by_code(code.strip().upper())
+    if not room:
+        raise ApplicationError('Invite code not found', 404)
+    return join_room(room[0], user_id, get_user_profile(user_id)['display_name'], activate=True)
+
+
+@db.atomic
+def leave_room(room_id, user_id):
+    room_state(room_id)
+    if any(row[0] == user_id for row in db.get_members_by_room(room_id)):
+        db.remove_member(user_id, room_id)
+        db.bump_room_event_version(room_id, 'member_left')
+    return {'status': 'left'}
+
+
+@db.atomic
+def update_profile(user_id, display_name, mbti='', priorities=''):
+    db.save_user_profile(user_id, display_name, mbti, priorities)
+    conn = db.get_connection()
+    for row in conn.execute('SELECT room_id, nickname FROM members WHERE user_id=?', (user_id,)).fetchall():
+        if row['nickname'] != display_name:
+            db.add_member(user_id, row['room_id'], display_name)
+            db.bump_room_event_version(row['room_id'], 'profile_updated')
+    return get_user_profile(user_id)

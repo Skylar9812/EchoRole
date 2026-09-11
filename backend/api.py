@@ -3,7 +3,7 @@ import application as services
 from backend.identity import current_user, issue_identity
 from backend.schemas import ProfileCreate, ProfileResponse, RoomResponse, MemberResponse, SessionCreate, SessionResponse
 from backend.authorization import room_member
-from backend.schemas import ProfileState
+from backend.schemas import ProfileState, RoomCreate, JoinCode
 from backend import legacy
 from backend.schemas import HealthResponse, ScenarioPreview
 
@@ -22,8 +22,8 @@ def me(user_id: str = Depends(current_user)):
 
 
 @router.post("/rooms", response_model=RoomResponse, status_code=201)
-def create_room(user_id: str = Depends(current_user)):
-    return services.create_room(user_id, services.get_user_profile(user_id)["display_name"])
+def create_room(body: RoomCreate | None = None, user_id: str = Depends(current_user)):
+    return services.create_room_retry_safe(user_id, body.request_id if body else None)
 
 
 @router.post("/rooms/{room_id}/join", response_model=RoomResponse)
@@ -74,3 +74,17 @@ def scenario(scenario_id: str) -> ScenarioPreview:
     if result is None:
         raise HTTPException(status_code=404, detail="Scenario not found")
     return result
+
+@router.post('/rooms/join', response_model=RoomResponse)
+def join_code(body: JoinCode, user_id: str = Depends(current_user)):
+    return services.join_by_code(body.invite_code, user_id)
+
+
+@router.post('/rooms/{room_id}/leave')
+def leave(room_id: int, user_id: str = Depends(current_user)):
+    return services.leave_room(room_id, user_id)
+
+
+@router.post('/me', response_model=ProfileState)
+def update_me(body: ProfileCreate, user_id: str = Depends(current_user)):
+    return services.update_profile(user_id, **body.model_dump())

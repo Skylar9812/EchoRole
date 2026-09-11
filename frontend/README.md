@@ -1,6 +1,14 @@
-# EchoRole Next.js boundary
+# EchoRole Next.js frontend — Phase 4
 
-The landing page remains unchanged. Phase 3 extends the existing server handlers and typed API contracts; no visual identity, lobby or session UI is implemented.
+Plain functional UI; visual redesign is deferred. The `/` page implements profile
+creation/editing, create/join by invite code, lobby/members, scenario category and
+preview/setup/replacement, active situation, own role brief/history/pressure,
+private Coach/history/suggestions, shared chat, action submission, waiting and
+joint advancement, shared progression history, and leave/rejoin.
+
+## Run
+
+Start FastAPI as described in `backend/README.md`, then:
 
 ```powershell
 cd frontend
@@ -9,76 +17,85 @@ Copy-Item .env.example .env.local
 npm run dev
 ```
 
-Start FastAPI separately using `backend/README.md`. The default local browser
-origin is `http://127.0.0.1:3000`. Use that exact origin, or update
-`ECHOROLE_WEB_ORIGIN`. Set `ECHOROLE_API_URL` to the server-only FastAPI address;
-never prefix it with `NEXT_PUBLIC_`.
+Open `http://127.0.0.1:3000`. The exact browser origin must match
+`ECHOROLE_WEB_ORIGIN`. `ECHOROLE_API_URL` is server-only. Loopback HTTP requires
+`ECHOROLE_COOKIE_SECURE=false`; Secure cookies remain the default otherwise.
 
-Browser contract (all requests are same-origin):
+## Boundaries
 
-- `POST /api/echorole/profiles` with `{display_name, mbti?, priorities?}` creates
-  a profile through FastAPI and stores its signed token in an HttpOnly,
-  SameSite=Strict, host-only cookie named `echorole_identity`, path `/`, age 30 days.
-  The JSON response contains only the profile. If a cookie already exists, this
-  request recovers that identity rather than replacing it.
-- `GET /api/echorole/me` recovers the profile on refresh or after either server
-  restarts. The browser sends the cookie automatically; no localStorage or
-  JavaScript-readable token is used. An expired/invalid credential returns 401.
-- Existing room routes are forwarded under `/api/echorole/rooms...`: create,
-  join, room state, members, create session and current public session. Their
-  bodies/statuses match the backend. The server reads only its cookie and sets
-  `Authorization: Bearer ...` for FastAPI; it does not forward client-supplied
-  Authorization or arbitrary URLs. This is an explicit route allowlist.
-- `DELETE /api/echorole/identity` clears the local cookie. It does not revoke a
-  previously copied token. After cookie loss, expiration or sign-out, creating a
-  new profile gives a new UUID; there is no unverified account-claim mechanism.
+`src/lib/contracts.ts` contains browser-safe response/request types;
+`src/lib/client.ts` centralizes typed same-origin calls and error handling.
+`src/lib/api.ts` is server-only FastAPI transport. The Next.js route handler uses
+an explicit allowlist, validates mutation Origin, forwards only its HttpOnly
+identity cookie as a bearer credential, strips tokens from browser responses,
+and disables caching. Python services retain all role, validation, generation,
+capacity, privacy and turn rules. React renders server state.
 
-Every mutation requires an Origin header exactly matching `ECHOROLE_WEB_ORIGIN`;
-cross-site Fetch Metadata is rejected too. This supplements SameSite cookie
-protection against CSRF. Reads and writes disable caching. Missing credentials
-return 401, authorization failures 403, and unavailable FastAPI 502.
+Private briefs, Coach replies and suggestions stay in component memory and are
+cleared on room/identity changes. Shared views never receive a peer's private data.
+Only pending outbound payloads (including one's own Coach input/action) are kept
+in participant-scoped sessionStorage for retry after reload. They are removed on
+confirmed success or explicit discard; clearing identity removes all saved retries.
+The selected room is tab-scoped. Cookies remain HttpOnly, never in JS storage.
 
-Secure cookies are the default. `.env.example` explicitly sets
-`ECHOROLE_COOKIE_SECURE=false` **only for loopback HTTP development**. Use HTTPS
-and remove that override outside local development. Keep the FastAPI process on
-loopback; no browser-to-FastAPI CORS access is required. Cookie/key theft, XSS
-acting through the browser, and local filesystem access remain security risks.
-This provides a replaceable local identity boundary, not real account login.
+## Polling and consistency
+
+A single non-overlapping refresh reads room, members, public session and shared
+messages, then own private/Coach/request/suggestion/turn/history projections.
+Polling schedules the next refresh 2.5 seconds after the previous cycle finishes,
+pauses while hidden, and refreshes on visibility/online events and after mutations.
+A manual refresh button is always available. No WebSockets or automatic AI recovery.
+Room/identity epoch fencing discards obsolete responses. Mismatched turn snapshots
+are not published; the next cycle retries. Failures display a stale-data warning
+and disable new submissions. 401 clears private state and requires local identity
+reset; 403 clears the room snapshot. 409 explains stale/conflicting state.
+
+## Retry strategy
+
+- Chat and Coach: `crypto.randomUUID()` per logical message, with original payload
+  saved before sending. Retry uses the same ID and content, never the edited draft.
+- Room creation: a saved UUID feeds a participant-scoped deterministic 24-character
+  invite code. Atomic create/replay requires membership and needs no new schema.
+  Legacy calls without an ID retain the original random six-character code.
+- Scenario setup/replacement: save original scenario and expected session ID;
+  retry reuses that compare-and-swap contract even after polling sees a new session.
+- Actions: save immutable original session/turn/text; Python's existing unique
+  participant/turn action is the idempotency key. No invented frontend action rules.
+- Join, leave, profile update and local sign-out use their existing/natural state
+  semantics. Profile creation recovers an already-set identity cookie on retry.
+  If the very first profile response is lost before its cookie reaches the browser,
+  an orphan profile can remain; no unsafe UUID-based account recovery is introduced.
+- The unconfirmed-request panel survives reload, offers exact replay and explains
+  discard risk. Validation (422) frees the draft to be corrected. Transport failure
+  does not establish whether the server committed or the provider finished.
+
+Coach running/ready/uncertain requests are recovered from the server request list.
+Ready replies have a save button without another provider call. Both Coach and
+turn uncertainty show an acknowledgement checkbox and require the current attempt
+ID. Recovery warns that external AI work may repeat; ordinary polling never calls
+recovery. Turn completion can safely resume a saved result using the existing API.
+
+## Verification
 
 ```powershell
 npm run build
 npm run typecheck
-npm start
-```
-
-After building, from the repository root:
-
-```powershell
+# From repository root:
+backend/.venv/Scripts/python -m unittest discover -s backend/tests -v
 backend/.venv/Scripts/python frontend/tests/transport_smoke.py
+backend/.venv/Scripts/python -m backend.tests.streamlit_smoke
+node frontend/tests/ui_smoke.cjs
 ```
 
-The smoke test starts both servers against temporary SQLite data and checks cookie
-flags, token omission, refresh/restart recovery, CSRF, authorization and sign-out.
-Set `ECHOROLE_NODE` to the Node executable if it is not on PATH. No visual UI is exercised; the existing local provider is used without external
-AI calls; servers are stopped after verification.
+The UI smoke uses two isolated Chromium contexts against temporary SQLite and the
+local AI provider. Set `ECHOROLE_PLAYWRIGHT` to an installed Playwright module and
+`ECHOROLE_CHROMIUM` to an existing Chromium executable if the default installation
+is unavailable. It starts loopback ports 3317/8317 and stops its own servers.
+It covers the real rendered flow, private isolation, lost-response replay after
+reload, turn advance, room restoration and leave polling. A mocked uncertain
+response separately verifies the checkbox and recovery payload; backend tests
+verify actual durable recovery/fencing. No external AI calls are needed.
 
-
-Phase 3 forwards shared room messages and participant session routes for private
-briefs, Coach messages/request status/recovery, suggestions, turns/actions/completion/
-recovery and progression. See the backend README for JSON contracts. The browser
-still sends only its HttpOnly identity cookie; no caller-supplied user or role is
-forwarded as authority. The optional `turn_index` query is validated before forwarding.
-The explicit role-name private URL is intentionally not in the browser allowlist;
-browser clients use `/sessions/{id}/private` for their own role.
-
-Typed request/response contracts are exported by `src/lib/api.ts`. Keep chat/Coach
-`request_id` stable across a timeout. The server timeout is 120 seconds; a timeout
-is not proof that FastAPI stopped. Query the same request/turn status or resubmit
-the same logical request. Never automatically call a recovery URL. An `uncertain`
-state requires the user to acknowledge that an external AI call may be repeated,
-then submit the displayed `attempt_id`. `ready` Coach results can be persisted via
-its `/complete` URL without another provider call. No visual recovery UI has been
-built for Next.js yet; Streamlit includes the explicit recovery controls.
-
-The live transport smoke test also checks shared chat retries, role/Coach isolation,
-action waiting, exactly-once progression, and private suggestion retrieval.
+Peer feedback/points still exist only in Streamlit: Phase 3 exposed no API for them,
+and Phase 4 is limited to the specified API-backed flow. Real account authentication,
+revocation, admission policy and HTTPS remain prerequisites for external exposure.

@@ -149,3 +149,19 @@ backend/.venv/Scripts/python -m backend.tests.streamlit_smoke
 
 It uses the existing local AI provider and disposable SQLite data, exercising chat,
 Coach, submission/waiting, joint advancement and evolved role/suggestion rendering.
+
+## Phase 4 browser support additions
+
+- `POST /me` accepts `ProfileCreate` and updates only the authenticated profile,
+  synchronizing existing membership nicknames/event versions atomically.
+- `POST /rooms` optionally accepts `{request_id}`. The shared Python service uses
+  a participant-scoped SHA-256-derived 24-character invite code for atomic replay.
+  No new table/index is added. Existing no-body clients retain six-character codes.
+- `POST /rooms/join` accepts `{invite_code}`; resolves and joins atomically using
+  existing capacity/role rules. Input is trimmed and case-normalized.
+- `POST /rooms/{room_id}/leave` removes only the caller's membership, bumps the
+  event version once, and is safe to repeat. Role reservations remain unchanged,
+  matching Streamlit; leaving immediately removes access to private APIs.
+
+These paths plus public scenario previews are explicitly allowed by Next.js.
+The frontend adds no database, AI, or room/session business logic.
