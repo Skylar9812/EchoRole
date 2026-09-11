@@ -1,5 +1,6 @@
 'use client';
 
+import Image from 'next/image';
 import { Feedback, ConnectionNotice } from './ui-feedback';
 
 import type { ReactNode } from 'react';
@@ -52,7 +53,7 @@ export default function ActiveSession(p: Props) {
         <div className={styles.brief}>{p.brief}</div>
         <div className={styles.move}>{p.action}</div>
         <aside className={styles.guidance}>{p.guidance}</aside>
-        <div className={styles.coach}>{p.coach}</div>
+        <div className={styles.coach}><Image className={styles.notebookArt} src="/illustrations/private-notebook.webp" width={56} height={56} sizes="(max-width: 480px) 32px, 56px" alt="" aria-hidden="true" />{p.coach}</div>
         <div className={styles.chat}><span className="section-label">THE SHARED SPACE</span>{p.chat}</div>
         <div className={styles.history}>{p.history}</div>
         <aside className={styles.context} aria-label="Session context and utilities">

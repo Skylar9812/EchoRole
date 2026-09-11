@@ -115,3 +115,8 @@
   .page :global(.text) { font-size: 16px; }
   .footer em { display: block; margin: 7px 0 0; }
 }
+
+/* A small decorative motif occupies only the private notebook label's end space. */
+.coach { position: relative; }
+.notebookArt { position: absolute; width: 56px; height: 56px; top: 15px; right: 20px; object-fit: contain; pointer-events: none; }
+@media (max-width: 480px) { .notebookArt { width: 32px; height: 32px; top: 19px; right: 18px; } }

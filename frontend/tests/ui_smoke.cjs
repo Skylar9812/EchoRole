@@ -21,7 +21,7 @@ async function idle(page) { await page.waitForTimeout(100); await waitFor(async(
   const a=await browser.newContext({viewport:{width:1440,height:1000}}), b=await browser.newContext();
   const alice=await a.newPage(), bob=await b.newPage(); const errors=[];
   for (const p of [alice,bob]) p.on('pageerror', e=>errors.push(e.message));
-  async function capture(name, fullPage=true) { if(process.env.ECHOROLE_SCREENSHOTS) { mkdirSync(process.env.ECHOROLE_SCREENSHOTS,{recursive:true}); await alice.evaluate(()=>scrollTo(0,0)); await alice.screenshot({path:join(process.env.ECHOROLE_SCREENSHOTS,name+'.png'),fullPage}); } }
+  async function capture(name, fullPage=true) { if(process.env.ECHOROLE_SCREENSHOTS) { mkdirSync(process.env.ECHOROLE_SCREENSHOTS,{recursive:true}); await alice.evaluate(()=>scrollTo(0,0)); await require('./illustration_checks.cjs')(alice); await alice.screenshot({path:join(process.env.ECHOROLE_SCREENSHOTS,name+'.png'),fullPage}); } }
   let originalIdentity;
   await alice.route('**/api/echorole/profiles', async route => {
     const response = await route.fetch(); originalIdentity = (await response.json()).user_id;
@@ -34,6 +34,7 @@ async function idle(page) { await page.waitForTimeout(100); await waitFor(async(
     assert(await alice.evaluate(()=>document.documentElement.scrollWidth <= innerWidth), `Landing overflow at ${width}px`);
     if (process.env.ECHOROLE_SCREENSHOTS) {
       mkdirSync(process.env.ECHOROLE_SCREENSHOTS,{recursive:true});
+      await require('./illustration_checks.cjs')(alice);
       await alice.screenshot({path:join(process.env.ECHOROLE_SCREENSHOTS,`landing-${width}.png`),fullPage:true});
     }
   }

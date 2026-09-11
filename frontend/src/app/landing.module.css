@@ -127,3 +127,16 @@
   .profileActions { flex-wrap: wrap; }
   .page .joinButton { padding: 9px 11px; gap: 9px; }
 }
+
+/* Final assets replace code-native drawing inside the same reserved art slots. */
+.finalArt { object-fit: contain; object-position: center; pointer-events: none; }
+.portrait { position: relative; border: 0; background: transparent; border-radius: 0; }
+.doorway { border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.invitation { position: relative; background: transparent; border: 0; box-shadow: none; transform: none; }
+.scene { pointer-events: none; }
+.scene > .finalArt { border-radius: 12px; }
+
+@media (min-width: 721px) and (max-width: 1000px) {
+  /* Keep the opaque hero clear of the approved tablet headline and supporting copy. */
+  .scene > .finalArt { width: 88% !important; left: 12% !important; }
+}

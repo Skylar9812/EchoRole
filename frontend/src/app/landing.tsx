@@ -1,5 +1,6 @@
 'use client';
 
+import Image from 'next/image';
 import { Feedback } from './ui-feedback';
 
 import type { FormEvent, ReactNode } from 'react';
@@ -19,19 +20,10 @@ type LandingProps = {
   onClearIdentity: () => void;
 };
 
-/** Temporary, code-native paper composition. Replace slots with final art later. */
+/** Final artwork stays inside the approved hero's reserved dimensions. */
 function Scene() {
   return <div className={styles.scene} data-illustration-slot="hero" aria-hidden="true">
-    <div className={styles.archFrame}><div className={styles.arch}>
-      <span className={styles.sun} /><span className={styles.farHill} /><span className={styles.nearHill} /><span className={styles.path} />
-    </div></div>
-    <div className={styles.sceneNote}>Different conversations.<br />A kinder you.<span /></div>
-    <svg className={styles.branch} viewBox="0 0 160 260" fill="none">
-      <path d="M80 248C83 155 45 90 98 15M77 186C99 159 124 130 132 95M72 143C44 129 27 102 22 80" stroke="#697d60" strokeWidth="2" />
-      <g fill="#87967a"><ellipse cx="93" cy="40" rx="12" ry="28" transform="rotate(30 93 40)" /><ellipse cx="66" cy="70" rx="12" ry="26" transform="rotate(-28 66 70)" /><ellipse cx="82" cy="106" rx="13" ry="27" transform="rotate(41 82 106)" /><ellipse cx="46" cy="111" rx="11" ry="25" transform="rotate(-47 46 111)" /><ellipse cx="123" cy="125" rx="11" ry="24" transform="rotate(27 123 125)" /><ellipse cx="102" cy="155" rx="10" ry="24" transform="rotate(54 102 155)" /><ellipse cx="71" cy="178" rx="11" ry="25" transform="rotate(-22 71 178)" /></g>
-    </svg>
-    <div className={styles.vase} /><div className={styles.table} />
-    <div className={styles.books}><span /><span /><span /></div><div className={styles.cup} />
+    <Image src="/illustrations/landing-hero.webp" alt="" aria-hidden="true" fill priority sizes="(max-width: 720px) 310px, (max-width: 1000px) 267px, (max-width: 1250px) 391px, (min-width: 1450px) 503px, 465px" className={styles.finalArt} />
     <span className={styles.sceneCaption}>A little space for a different perspective.</span>
   </div>;
 }
@@ -73,7 +65,7 @@ export default function Landing({ profile, score, busy, loading = false, feedbac
             <div className={styles.characterBody}>
               <div className={styles.portraitColumn}>
                 <div className={styles.portrait} data-illustration-slot="character" aria-hidden="true">
-                  <svg viewBox="0 0 180 200" fill="none"><path d="M29 191c3-48 23-68 61-68s59 20 62 68" fill="#83937a" /><path d="M61 126c-15-15-18-38-10-62 7-26 24-39 46-35 26 5 39 36 27 66-3 12-3 26 7 41-29 9-45 9-70-10Z" fill="#666653" /><path d="M102 60c-4 24-24 28-36 31 0 20 10 35 24 35 14 0 29-19 29-40-8-4-11-12-17-26Z" fill="#d9c2a6" /><path d="M35 165c20 9 35 18 47 34M127 146l-14 53" stroke="#65785e" strokeWidth="1.5" /></svg>
+                  <Image src="/illustrations/character-profile.webp" alt="" aria-hidden="true" fill sizes="(max-width: 1250px) 112px, 146px" className={styles.finalArt} />
                 </div>
                 <p className={styles.handNote}>Same you,<br />more perspective.</p>
                 <span className={styles.portraitCaption}>YOUR STORY STARTS HERE</span>
@@ -96,7 +88,7 @@ export default function Landing({ profile, score, busy, loading = false, feedbac
               <p className={styles.roomNote}>A new<br />conversation<br />awaits.</p>
             </div>
             <div className={styles.joinPanel}>
-              <div className={styles.invitation} data-illustration-slot="invitation" aria-hidden="true"><svg width="54" height="42" viewBox="0 0 54 42" fill="none"><rect x="2" y="2" width="50" height="38" rx="2" stroke="currentColor" /><path d="m3 4 24 19L51 4M3 39l17-16m31 16L34 23" stroke="currentColor" /></svg></div>
+              <div className={styles.invitation} data-illustration-slot="invitation" aria-hidden="true"><Image src="/illustrations/join-envelope.webp" alt="" aria-hidden="true" fill sizes="(max-width: 1250px) 80px, 102px" className={styles.finalArt} /></div>
               <div className={styles.joinCopy}><span className={styles.sectionNumber}>ALREADY INVITED?</span><h2>Join a room</h2><form onSubmit={onJoin}><label className={styles.srOnly} htmlFor="entry-code">Invite code</label><input id="entry-code" name="code" placeholder="Invite code" required autoComplete="off" spellCheck={false} disabled={loading} /><button className={styles.joinButton} disabled={unavailable || !profile}>Join room<Arrow /></button></form></div>
             </div>
             <p className={styles.roomHint}>{profile ? 'Your profile is ready. Choose where your story begins.' : 'Create your profile first, then create or join a room.'}</p>

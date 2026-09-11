@@ -332,3 +332,29 @@ reduced motion and offline/online presentation. Screenshots were visually review
 this is not a screen-reader certification. Final illustration slots remain temporary.
 No backend, API client, authorization, polling or mutation logic changed. No push,
 merge or deployment.
+
+## Final illustration integration
+
+The six supplied WebP originals are stored unchanged in `frontend/public/illustrations`.
+Landing uses landing-hero, character-profile, scenario-arch and join-envelope in
+its existing reserved artwork slots. The shared Doorway component reuses scenario-arch
+for selected Lobby scenarios and uses lobby-preview before selection. The private
+Coach has a small private-notebook motif (56px desktop / 32px mobile) in its heading
+space. No page structure, typography, controls, state, API or backend logic changed.
+
+All artwork uses Next Image, empty alt/aria-hidden, explicit sizes and contain/center
+placement, preserving the entire subject without distortion. Only the hero is priority.
+Hidden narrow-screen art follows the existing responsive visibility rules. The hero
+retains its reserved 465x370 desktop / 310x208 mobile slot. Its temporary CSS drawing
+and decorative handwriting are replaced by the supplied final image; UI text remains HTML.
+
+Verification: production build, typecheck and complete two-browser suite with the
+local provider/disposable database. Screenshots at 1440/1024/768/375px were reviewed.
+Image checks await decoding, verify decorative semantics/contain fit, and confirm
+reserved width/height stay unchanged after decoding. Existing accessibility, identity
+recovery, polling, privacy, retries, action progression and peer feedback tests pass.
+No source asset modification, regeneration, push, merge or deployment.
+Tablet adjustment: between 721px and 1000px the hero image uses 88% of its existing
+art slot and aligns right, keeping the frozen headline/copy unobstructed. Added
+text-range versus image-bound checks at every captured width. All source images
+remain unmodified; no subject cropping or asset regeneration was required.

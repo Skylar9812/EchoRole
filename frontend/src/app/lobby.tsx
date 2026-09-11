@@ -78,7 +78,7 @@ export default function Lobby(props: LobbyProps) {
             <article className={styles.scenarioPaper} aria-labelledby="scenario-title" aria-busy={loading}>
               <div className={styles.scenarioTop}>
                 <div><span className={styles.eyebrow}>SCENARIO</span><h1 id="scenario-title">{selected?.title ?? 'Which conversation will you enter?'}</h1>{selected && <p className={styles.category}>{selected.category}</p>}</div>
-                <div className={styles.doorwayArt} aria-hidden="true"><Doorway /><span className={styles.floor} /></div>
+                <div className={styles.doorwayArt} aria-hidden="true"><Doorway preview={!selected} /></div>
               </div>
               {selected ? <div className={styles.scenarioText} data-reveal key={selected.id}>
                 <section aria-labelledby="context-title"><h2 id="context-title">Context</h2><p>{selected.context}</p></section>
