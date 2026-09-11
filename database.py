@@ -1,4 +1,7 @@
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar
+from functools import wraps
 from pathlib import Path
 import sqlite3
 import json
@@ -27,7 +30,66 @@ def log_database_event(event, **fields):
     )
 
 
+class StateConflict(ValueError):
+    """A requested write conflicts with persisted participant/session state."""
+
+
+_transaction_connection = ContextVar("echorole_transaction", default=None)
+
+
+class _BorrowedConnection:
+    """Legacy helpers may commit/close; the outer unit of work owns both."""
+    def __init__(self, connection):
+        self.connection = connection
+
+    def __getattr__(self, name):
+        return getattr(self.connection, name)
+
+    def commit(self):
+        pass
+
+    def close(self):
+        pass
+
+
+@contextmanager
+def transaction():
+    """Serialize check/write flows across threads AND SQLite processes.
+
+    Nested operations reuse one connection. Only the outer scope commits; any
+    exception escaping it rolls back the whole operation. No schema changes.
+    """
+    if _transaction_connection.get() is not None:
+        yield
+        return
+    connection = get_connection()
+    token = None
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        token = _transaction_connection.set(_BorrowedConnection(connection))
+        yield
+        connection.commit()
+    except BaseException:
+        connection.rollback()
+        raise
+    finally:
+        if token is not None:
+            _transaction_connection.reset(token)
+        connection.close()
+
+
+def atomic(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        with transaction():
+            return function(*args, **kwargs)
+    return wrapped
+
+
 def get_connection():
+    existing = _transaction_connection.get()
+    if existing is not None:
+        return existing
     conn = sqlite3.connect(
         DB_NAME,
         check_same_thread=False,
@@ -331,7 +393,8 @@ def bump_room_event_version(room_id, event_type, session_id=None):
     cursor = conn.cursor()
 
     try:
-        cursor.execute("BEGIN IMMEDIATE")
+        if not conn.in_transaction:
+            cursor.execute("BEGIN IMMEDIATE")
         cursor.execute(
             """
             UPDATE rooms
@@ -597,6 +660,7 @@ def get_total_received_peer_feedback_points(user_id):
     return int(row["total_points"] or 0)
 
 
+@atomic
 def add_member(user_id, room_id, nickname=None):
     conn = get_connection()
     cursor = conn.cursor()
@@ -611,6 +675,9 @@ def add_member(user_id, room_id, nickname=None):
     existing = cursor.fetchone()
 
     if existing is None:
+        allowed, reason = can_user_join_room(room_id, user_id)
+        if not allowed:
+            raise StateConflict(reason)
         cursor.execute(
             "INSERT INTO members (user_id, room_id, nickname) VALUES (?, ?, ?)",
             (user_id, room_id, nickname)
@@ -630,6 +697,7 @@ def add_member(user_id, room_id, nickname=None):
     conn.close()
 
 
+@atomic
 def remove_member(user_id, room_id):
     conn = get_connection()
     cursor = conn.cursor()
@@ -870,7 +938,10 @@ def get_session_by_room(room_id):
     }
 
 
+@atomic
 def assign_role(session_id, user_id, role_name):
+    if role_name not in ("role_a", "role_b"):
+        raise StateConflict("Unknown role")
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -884,7 +955,15 @@ def assign_role(session_id, user_id, role_name):
     )
     existing = cursor.fetchone()
 
+    if existing is not None:
+        if get_user_role(session_id, user_id) != role_name:
+            raise StateConflict("Participant already owns a different role")
     if existing is None:
+        if conn.execute(
+            "SELECT 1 FROM session_roles WHERE session_id = ? AND role_name = ?",
+            (session_id, role_name),
+        ).fetchone():
+            raise StateConflict("Role already assigned")
         cursor.execute(
             """
             INSERT INTO session_roles (session_id, user_id, role_name)
@@ -2112,3 +2191,12 @@ def update_session_stage(session_id, new_stage):
 
     conn.commit()
     conn.close()
+
+
+def get_session_room_id(session_id):
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT room_id FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()

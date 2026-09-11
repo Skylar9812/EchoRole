@@ -1,0 +1,112 @@
+"""Live transport smoke test; requires built Next.js and the backend venv.
+
+Run from repository root: backend/.venv/Scripts/python frontend/tests/transport_smoke.py
+Set ECHOROLE_NODE to an absolute Node executable when node is not on PATH.
+All servers use a disposable database. No UI or provider calls.
+"""
+from contextlib import ExitStack
+import hashlib
+import http.cookiejar
+import json
+import os
+from pathlib import Path
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def port():
+    with socket.socket() as sock:
+        sock.bind(('127.0.0.1', 0))
+        return sock.getsockname()[1]
+
+
+def run():
+    production = ROOT / 'echorole.db'
+    before = hashlib.sha256(production.read_bytes()).digest() if production.exists() else None
+    with tempfile.TemporaryDirectory() as temp, ExitStack() as stack:
+        api_port, web_port = port(), port()
+        origin = f'http://127.0.0.1:{web_port}'
+        env = {**os.environ, 'ECHOROLE_DB_PATH': str(Path(temp) / 'transport.db'),
+               'ECHOROLE_API_URL': f'http://127.0.0.1:{api_port}',
+               'ECHOROLE_WEB_ORIGIN': origin, 'ECHOROLE_COOKIE_SECURE': 'false',
+               'NEXT_TELEMETRY_DISABLED': '1'}
+        node = os.environ.get('ECHOROLE_NODE') or shutil.which('node')
+        assert node, 'Set ECHOROLE_NODE or add node to PATH'
+        def start(name, command, cwd, health):
+            log = stack.enter_context(open(Path(temp) / (name + '.log'), 'w+'))
+            process = subprocess.Popen(command, cwd=cwd, env=env, stdout=log, stderr=log,
+                                       creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            def stop():
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=10)
+            stack.callback(stop)
+            for _ in range(120):
+                if process.poll() is not None:
+                    log.seek(0)
+                    raise AssertionError(log.read())
+                try:
+                    with urllib.request.urlopen(health, timeout=1) as response:
+                        if response.status == 200:
+                            return process
+                except OSError:
+                    time.sleep(.25)
+            raise AssertionError(name + ' startup timeout')
+        api_command = [sys.executable, '-m', 'uvicorn', 'backend.main:app', '--host', '127.0.0.1', '--port', str(api_port)]
+        api = start('api', api_command, ROOT, env['ECHOROLE_API_URL'] + '/api/v1/health')
+        start('web', [node, 'node_modules/next/dist/bin/next', 'start', '--hostname', '127.0.0.1', '--port', str(web_port)], ROOT / 'frontend', origin)
+        jar = http.cookiejar.CookieJar()
+        browser = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+        def request(path, method='GET', body=None, browser=browser, request_origin=origin):
+            req = urllib.request.Request(origin + '/api/echorole/' + path,
+                data=json.dumps(body).encode() if body is not None else None,
+                headers={'Origin': request_origin, 'Content-Type': 'application/json'}, method=method)
+            try:
+                response = browser.open(req, timeout=15)
+            except urllib.error.HTTPError as error:
+                response = error
+            with response:
+                return response.status, json.loads(response.read()), response.headers
+        assert request('me')[0] == 401
+        assert request('profiles', 'POST', {'display_name': 'Cross-site'}, request_origin='https://other.invalid')[0] == 403
+        status, profile, headers = request('profiles', 'POST', {'display_name': 'Browser Alice'})
+        assert status == 201, profile
+        assert 'access_token' not in profile and 'token_type' not in profile
+        cookie = headers['Set-Cookie']
+        assert 'HttpOnly' in cookie and 'SameSite=strict' in cookie and 'Max-Age=2592000' in cookie
+        assert 'no-store' in headers['Cache-Control']
+        assert request('me')[1] == profile
+        assert request('profiles', 'POST', {'display_name': 'Should recover'})[1] == profile
+        # Reload browser state, preserving only its cookie jar.
+        refreshed = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+        assert request('me', browser=refreshed)[1] == profile
+        api.terminate()
+        api.wait(timeout=10)
+        start('api-restarted', api_command, ROOT, env['ECHOROLE_API_URL'] + '/api/v1/health')
+        assert request('me', browser=refreshed)[1] == profile
+        status, room, _ = request('rooms', 'POST')
+        assert status == 201, room
+        assert request(f'rooms/{room["id"]}')[1] == room
+        assert request('rooms', 'POST', request_origin='https://other.invalid')[0] == 403
+        assert request('sessions/1/private')[0] == 404
+        outsider = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+        assert request('profiles', 'POST', {'display_name': 'Browser Bob'}, browser=outsider)[0] == 201
+        assert request(f'rooms/{room["id"]}', browser=outsider)[0] == 403
+        assert request('identity', 'DELETE')[0] == 200
+        assert request('me')[0] == 401
+        print('PASS: HttpOnly transport, no token in JSON, refresh and API-restart recovery, CSRF, membership, allowlist, local sign-out')
+    if before is not None:
+        assert hashlib.sha256(production.read_bytes()).digest() == before
+        print('PASS: existing database file unchanged')
+
+
+if __name__ == '__main__':
+    run()

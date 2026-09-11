@@ -2,6 +2,8 @@ from fastapi import APIRouter, HTTPException, Depends, Request
 import application as services
 from backend.identity import current_user, issue_identity
 from backend.schemas import ProfileCreate, ProfileResponse, RoomResponse, MemberResponse, SessionCreate, SessionResponse
+from backend.authorization import room_member
+from backend.schemas import ProfileState
 from backend import legacy
 from backend.schemas import HealthResponse, ScenarioPreview
 
@@ -12,6 +14,11 @@ router = APIRouter()
 def create_profile(body: ProfileCreate, request: Request):
     profile = services.create_profile(**body.model_dump())
     return {**profile, "access_token": issue_identity(request, profile["user_id"])}
+
+
+@router.get("/me", response_model=ProfileState)
+def me(user_id: str = Depends(current_user)):
+    return services.get_user_profile(user_id)
 
 
 @router.post("/rooms", response_model=RoomResponse, status_code=201)
@@ -25,27 +32,22 @@ def join_room(room_id: int, user_id: str = Depends(current_user)):
 
 
 @router.get("/rooms/{room_id}", response_model=RoomResponse)
-def room(room_id: int, user_id: str = Depends(current_user)):
-    services.require_member(room_id, user_id)
+def room(room_id: int, user_id: str = Depends(room_member)):
     return services.room_state(room_id)
 
 
 @router.get("/rooms/{room_id}/members", response_model=list[MemberResponse])
-def members(room_id: int, user_id: str = Depends(current_user)):
-    services.require_member(room_id, user_id)
+def members(room_id: int, user_id: str = Depends(room_member)):
     return services.list_members(room_id)
 
 
 @router.post("/rooms/{room_id}/sessions", response_model=SessionResponse, status_code=201)
-def create_session(room_id: int, body: SessionCreate, user_id: str = Depends(current_user)):
-    services.require_member(room_id, user_id)
-    services.create_scenario_session(room_id, body.scenario_id)
-    return services.public_session(room_id)
+def create_session(room_id: int, body: SessionCreate, user_id: str = Depends(room_member)):
+    return services.start_session(room_id, user_id, body.scenario_id, body.expected_session_id)
 
 
 @router.get("/rooms/{room_id}/session", response_model=SessionResponse | None)
-def session(room_id: int, user_id: str = Depends(current_user)):
-    services.require_member(room_id, user_id)
+def session(room_id: int, user_id: str = Depends(room_member)):
     return services.public_session(room_id)
 
 

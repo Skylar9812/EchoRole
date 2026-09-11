@@ -13,3 +13,7 @@ __pycache__/
 *.pyc
 rag_index/
 debug_last_story_progression_prompt.txt 
+
+# Local identity signing keys (including atomic publication temporaries)
+*.identity-key
+*.identity-key.*

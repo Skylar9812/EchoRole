@@ -10,11 +10,14 @@ class ProfileCreate(BaseModel):
     priorities: str = ""
 
 
-class ProfileResponse(BaseModel):
+class ProfileState(BaseModel):
     user_id: str
     display_name: str
     mbti: str
     priorities: str
+
+
+class ProfileResponse(ProfileState):
     access_token: str
     token_type: Literal["bearer"] = "bearer"
 
@@ -35,6 +38,7 @@ class MemberResponse(BaseModel):
 class SessionCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     scenario_id: str
+    expected_session_id: int | None = Field(default=None, gt=0)
 
 
 class SessionResponse(BaseModel):
