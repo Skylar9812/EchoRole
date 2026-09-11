@@ -20,10 +20,10 @@ type LandingProps = {
   onClearIdentity: () => void;
 };
 
-/** Final artwork stays inside the approved hero's reserved dimensions. */
+/** Keep the artwork responsive, with a shallow frame on wide desktops. */
 function Scene() {
   return <div className={styles.scene} data-illustration-slot="hero" aria-hidden="true">
-    <Image src="/illustrations/landing-hero.webp" alt="" aria-hidden="true" fill priority sizes="(max-width: 720px) 310px, (max-width: 1000px) 267px, (max-width: 1250px) 391px, (min-width: 1450px) 503px, 465px" className={styles.finalArt} />
+    <Image src="/illustrations/landing-hero.webp" alt="" aria-hidden="true" fill priority sizes="(max-width: 720px) 310px, (max-width: 1000px) 267px, (max-width: 1250px) calc(39vw - 31.2px), (max-width: 1536px) calc(46.8vw - 59.904px), 659px" className={styles.finalArt} />
     <span className={styles.sceneCaption}>A little space for a different perspective.</span>
   </div>;
 }

@@ -11,7 +11,8 @@ module.exports = async page => {
     assert(info.width>0 && info.height>0,'Image must decode');
     if (info.final) {
       assert.equal(info.alt,''); assert.equal(info.hidden,'true');
-      assert.equal(info.fit,'contain');
+      const croppedHero = await img.evaluate(el => !!el.closest('[data-illustration-slot=hero]') && innerWidth >= 1251);
+      assert.equal(info.fit,croppedHero ? 'cover' : 'contain');
       const after=await img.boundingBox();
       assert.equal(after.width,before.width,'Image width must be reserved before decode');
       assert.equal(after.height,before.height,'Image height must be reserved before decode');

@@ -136,7 +136,35 @@
 .scene { pointer-events: none; }
 .scene > .finalArt { border-radius: 12px; }
 
+@media (min-width: 1001px) {
+  /* Pair the complete artwork with the copy inside its own grid column. */
+  .scene {
+    position: relative;
+    width: 100%;
+    max-width: 760px;
+    height: auto;
+    aspect-ratio: 3 / 2;
+    justify-self: center;
+    right: auto;
+    top: 14px;
+    transform: none;
+  }
+}
+
 @media (min-width: 721px) and (max-width: 1000px) {
   /* Keep the opaque hero clear of the approved tablet headline and supporting copy. */
   .scene > .finalArt { width: 88% !important; left: 12% !important; }
+}
+
+@media (min-width: 1251px) {
+  /* Center on the right half of the page content, independently of the text grid. */
+  .scene {
+    position: absolute;
+    left: 75%;
+    width: 46.8%;
+    height: 340px;
+    aspect-ratio: auto;
+    transform: translateX(-50%);
+  }
+  .scene > .finalArt { object-fit: cover; object-position: center 42%; }
 }
