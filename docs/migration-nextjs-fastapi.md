@@ -240,3 +240,18 @@ Phase 4.5 changed files:
 - `frontend/src/lib/client.ts`, `frontend/src/lib/contracts.ts`
 - `frontend/tests/transport_smoke.py`, `frontend/tests/ui_smoke.cjs`, `frontend/README.md`
 - `docs/migration-nextjs-fastapi.md`
+
+## Landing visual pass
+
+Continued from `290468b`. Only the entry screen is restyled, using the local
+UI UX Pro Max guidance and the supplied cream/sage editorial reference. The new
+`landing.tsx` and scoped CSS module preserve the existing workflow callbacks,
+profile-first sequence, enrollment recovery, and room retry payloads. Lobby and
+Active Session retain their previous markup and global styles. No backend or API
+files changed. The original logo is copied unchanged into Next.js public assets.
+
+Temporary code-native art slots are marked `hero`, `character`, `doorway`, and
+`invitation`; final illustrations are deferred. Text and controls remain HTML.
+Verification includes build/typecheck, entry layouts at 375/768/1024/1440px,
+profile fields/edit/reload, identity lost-response recovery, and the existing
+two-browser room/session smoke. Local preview uses separate temporary SQLite data.

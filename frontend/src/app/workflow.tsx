@@ -1,5 +1,6 @@
 'use client';
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import Landing from './landing';
 import { api, ApiError, pending } from '@/lib/client';
 import type { Profile, ProfileInput, Room, Member, Scenario, Session, SharedMessage, PrivateState, CoachMessage, CoachResult, Suggestion, TurnStatus, ProgressionEntry, ChatSend, CoachSend, ActionSend, PeerFeedbackState, PeerFeedbackSend } from '@/lib/contracts';
 
@@ -64,16 +65,41 @@ export default function EchoRole() {
     if (kind === 'action') await api.action(id, JSON.parse(raw) as ActionSend);
     sessionStorage.removeItem(key);
   }
-  if (boot) return <main><h1>EchoRole</h1><p role="status">Loading profile and scenarios…</p></main>;
-  const s = data?.session, t = data?.turn;
-  return <main><h1>EchoRole</h1><p>Profile → Room → Scenario → Session</p>
+  const feedback = <>
     {error && <div role="alert"><p>{error}</p><button disabled={busy} onClick={() => void run(async () => { await refresh(); if (!profile) { setCatalog(await api.scenarios()); const p = await api.me(); setProfile(p); } })}>Retry status</button></div>}
     {!!retries.length && <section><h2>Unconfirmed requests — private to this browser</h2><p>These requests may already have succeeded. Retry sends the original saved payload, even if you edited the form. Refreshing status never regenerates an uncertain result.</p>{retries.map(key => <div key={key}><p>{key.split(':')[2]} request · {key.split(':').slice(3).join(' / ')}</p><button disabled={busy} onClick={() => void run(() => retrySaved(key))}>Retry original request</button><button disabled={busy} onClick={() => { sessionStorage.removeItem(key); setNotice('Saved retry discarded. Check status before sending again; a previous request may still complete.'); }}>Discard saved retry</button></div>)}</section>}
     {notice && <p role="status">{notice}</p>}{busy && <p role="status">Request in progress. Polling continues; do not create a new request if the connection fails.</p>}
+  </>;
+  function createRoom() {
+    if (!profile) return;
+    void run(async () => {
+      const key = `echorole:${profile.user_id}:create`;
+      const body = pending(key, {request_id: crypto.randomUUID()});
+      const room = await api.createRoom(body.request_id);
+      selectRoom(room.id);
+      sessionStorage.removeItem(key);
+    });
+  }
+  function joinRoom(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const code = String(new FormData(event.currentTarget).get('code'));
+    void run(async () => selectRoom((await api.join(code)).id));
+  }
+  function clearIdentity() {
+    void run(async () => {
+      if (roomId) await api.leave(roomId);
+      await api.signout(); selectRoom(null); setProfile(null); setScore(0);
+      for (const key of Object.keys(sessionStorage)) if (key.startsWith('echorole:')) sessionStorage.removeItem(key);
+    });
+  }
+  if (boot || !roomId) return <Landing profile={profile} score={score} busy={busy} loading={boot} feedback={feedback} onProfile={profileForm} onCreate={createRoom} onJoin={joinRoom} onClearIdentity={clearIdentity} />;
+  const s = data?.session, t = data?.turn;
+  return <main><h1>EchoRole</h1><p>Profile → Room → Scenario → Session</p>
+    {feedback}
     {profile && <p>Peer score: {score} points</p>}
     <details open={!profile}><summary>Profile{profile ? `: ${profile.display_name}` : ''}</summary><form onSubmit={profileForm} key={profile?.user_id ?? 'new'}><label>Display name<input name="name" required defaultValue={profile?.display_name} /></label><label>MBTI (optional)<input name="mbti" defaultValue={profile?.mbti} /></label><label>Communication / value priorities<textarea name="priorities" defaultValue={profile?.priorities} /></label><button disabled={busy}>{profile ? 'Save profile' : 'Create profile'}</button></form></details>
-    <button disabled={busy} onClick={() => void run(async () => { if (roomId) await api.leave(roomId); await api.signout(); selectRoom(null); setProfile(null); setScore(0); for (const k of Object.keys(sessionStorage)) if (k.startsWith('echorole:')) sessionStorage.removeItem(k); })}>Clear local identity</button>
-    {profile && !roomId && <section><h2>Create or join a room</h2><button disabled={busy} onClick={() => void run(async () => { const key = `echorole:${profile.user_id}:create`; const body = pending(key, {request_id: crypto.randomUUID()}); const r = await api.createRoom(body.request_id); selectRoom(r.id); sessionStorage.removeItem(key); })}>Create room</button><form onSubmit={e => { e.preventDefault(); const code = String(new FormData(e.currentTarget).get('code')); void run(async () => selectRoom((await api.join(code)).id)); }}><label>Invite code<input name="code" required /></label><button disabled={busy}>Join room</button></form></section>}
+    <button disabled={busy} onClick={clearIdentity}>Clear local identity</button>
+
     {profile && roomId && <><section><h2>{s ? 'Active session' : 'Lobby'} — Room {roomId}</h2><p>Invite code: <strong>{data?.room.invite_code ?? 'Loading…'}</strong></p>{pollError && <p role="alert">Updates unavailable: {pollError}. Displayed data may be stale.</p>}<button onClick={() => void refresh()}>Refresh status</button><button disabled={busy} onClick={() => void run(async () => { await api.leave(roomId); selectRoom(null); })}>Leave room</button><h3>Participants</h3>{data ? <ul>{data.members.map(m => <li key={m.user_id}>{m.nickname ?? 'Participant'}{m.user_id === profile.user_id ? ' (you)' : ''}</li>)}</ul> : <p>Loading room…</p>}{data?.members.length === 1 && <p>Waiting for another participant. Share the invite code.</p>}</section>
     {data && <details open={!s}><summary>Scenario setup{s ? ' / replace session' : ''}</summary><label>Category<select value={category} onChange={e => { setCategory(e.target.value); setScenario(''); }}><option value="">All categories</option>{[...new Set(catalog.map(x => x.category))].map(c => <option key={c}>{c}</option>)}</select></label><label>Scenario<select value={scenario} onChange={e => setScenario(e.target.value)}><option value="">Choose a scenario</option>{catalog.filter(x => !category || x.category === category).map(x => <option key={x.id} value={x.id}>{x.title}</option>)}</select></label>{!catalog.length && <p>No scenarios available.</p>}{catalog.filter(x => x.id === scenario).map(x => <div key={x.id}><Text>{x.context}</Text><Text>{x.conflict}</Text><Text>{x.opening_situation}</Text></div>)}<button disabled={busy || !scenario || !!pollError} onClick={() => void run(async () => { const key = `echorole:${profile.user_id}:setup:${roomId}`; const body = pending(key, {scenario_id: scenario, expected_session_id: s?.id}); await api.start(roomId, body.scenario_id, body.expected_session_id); sessionStorage.removeItem(key); clear(); })}>{s ? 'Replace session with selected scenario' : 'Start session'}</button></details>}
     {s && t && <><section><h2>{s.title} — Turn {t.current_turn}</h2><details><summary>Scenario context</summary><Text>{s.context}</Text><Text>{s.conflict}</Text></details><h3>Shared situation</h3><Text>{t.current_situation}</Text><p role="status">Turn status: {t.state}. You: {t.submitted ? 'submitted' : 'action needed'}. Other participant: {t.other_submitted ? 'submitted' : 'waiting'}.</p></section>

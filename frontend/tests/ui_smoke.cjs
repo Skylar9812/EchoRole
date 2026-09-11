@@ -1,6 +1,6 @@
 const { chromium } = require(process.env.ECHOROLE_PLAYWRIGHT || 'C:/Users/skyla/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
 const { spawn, execFileSync } = require('node:child_process');
-const { mkdtempSync, rmSync } = require('node:fs');
+const { mkdtempSync, rmSync, mkdirSync } = require('node:fs');
 const { tmpdir } = require('node:os');
 const { resolve, join } = require('node:path');
 const assert = require('node:assert/strict');
@@ -11,14 +11,14 @@ const env = {...process.env, ECHOROLE_DB_PATH: join(temp, 'ui.db'), ECHOROLE_API
 const procs = []; let browser;
 async function waitFor(fn, message) { for (let i=0;i<100;i++) { if (await fn()) return; await new Promise(r=>setTimeout(r,250)); } throw Error(message); }
 async function text(page, value) { await page.getByText(value, {exact:false}).first().waitFor({timeout:25000}); }
-async function idle(page) { await waitFor(async()=> !(await page.getByRole('status').filter({hasText:'Request in progress'}).count()), 'UI busy'); }
+async function idle(page) { await page.waitForTimeout(100); await waitFor(async()=> !(await page.getByRole('status').filter({hasText:'Request in progress'}).count()), 'UI busy'); }
 (async()=>{ try {
   for (const [cmd,args,cwd] of [[join(root,'backend/.venv/Scripts/python.exe'),['-m','uvicorn','backend.main:app','--host','127.0.0.1','--port','8317'],root], [process.execPath,['node_modules/next/dist/bin/next','start','--hostname','127.0.0.1','--port','3317'],join(root,'frontend')]]) {
     const proc=spawn(cmd,args,{cwd,env,windowsHide:true,stdio:'pipe'}); procs.push(proc); proc.stderr.on('data',b=> { if(b.toString().includes('Error')) process.stderr.write(b); });
   }
   await waitFor(async()=>{try{return (await fetch(origin)).ok && (await fetch(env.ECHOROLE_API_URL+'/api/v1/health')).ok;}catch{return false;}},'startup');
   browser=await chromium.launch({headless:true, executablePath: process.env.ECHOROLE_CHROMIUM});
-  const a=await browser.newContext(), b=await browser.newContext();
+  const a=await browser.newContext({viewport:{width:1440,height:1000}}), b=await browser.newContext();
   const alice=await a.newPage(), bob=await b.newPage(); const errors=[];
   for (const p of [alice,bob]) p.on('pageerror', e=>errors.push(e.message));
   let originalIdentity;
@@ -26,7 +26,19 @@ async function idle(page) { await waitFor(async()=> !(await page.getByRole('stat
     const response = await route.fetch(); originalIdentity = (await response.json()).user_id;
     await route.abort('failed');
   });
-  await alice.goto(origin); await alice.getByLabel('Display name').fill('Alice UI');
+  await alice.goto(origin);
+  await waitFor(async()=>await alice.getByRole('button',{name:'Create profile',exact:true}).isEnabled(),'Landing profile ready');
+  for (const width of [375, 768, 1024, 1440]) {
+    await alice.setViewportSize({width,height:1000});
+    assert(await alice.evaluate(()=>document.documentElement.scrollWidth <= innerWidth), `Landing overflow at ${width}px`);
+    if (process.env.ECHOROLE_SCREENSHOTS) {
+      mkdirSync(process.env.ECHOROLE_SCREENSHOTS,{recursive:true});
+      await alice.screenshot({path:join(process.env.ECHOROLE_SCREENSHOTS,`landing-${width}.png`),fullPage:true});
+    }
+  }
+  await alice.getByLabel('Display name').fill('Alice UI');
+  await alice.getByLabel('MBTI (optional)',{exact:true}).fill('INFJ');
+  await alice.getByLabel('Communication / value priorities',{exact:true}).fill('Listening and trust');
   await alice.getByRole('button',{name:'Create profile',exact:true}).click(); await idle(alice);
   assert(originalIdentity);
   // route.fetch can process Set-Cookie itself. Remove only that cookie to model
@@ -37,6 +49,13 @@ async function idle(page) { await waitFor(async()=> !(await page.getByRole('stat
   await alice.getByLabel('Display name').fill('Edited retry must not overwrite Alice');
   await alice.getByRole('button',{name:'Create profile',exact:true}).click(); await text(alice,'Profile: Alice UI');
   const restored = await (await a.request.get(origin+'/api/echorole/me')).json(); assert.equal(restored.user_id,originalIdentity);
+  assert.equal(restored.mbti,'INFJ'); assert.equal(restored.priorities,'Listening and trust');
+  await alice.getByLabel('MBTI (optional)',{exact:true}).fill('ENFP');
+  await alice.getByLabel('Communication / value priorities',{exact:true}).fill('Empathy and clear boundaries');
+  await alice.getByRole('button',{name:'Save profile',exact:true}).click(); await idle(alice);
+  await alice.reload(); await text(alice,'Profile: Alice UI');
+  assert.equal(await alice.getByLabel('MBTI (optional)',{exact:true}).inputValue(),'ENFP');
+  assert.equal(await alice.getByLabel('Communication / value priorities',{exact:true}).inputValue(),'Empathy and clear boundaries');
   assert(!(await alice.evaluate(()=>document.cookie)).includes('echorole_enrollment'));
   await bob.goto(origin); await bob.getByLabel('Display name').fill('Bob UI');
   await bob.getByRole('button',{name:'Create profile',exact:true}).click(); await text(bob,'Create or join a room');
@@ -96,5 +115,5 @@ async function idle(page) { await waitFor(async()=> !(await page.getByRole('stat
   await text(alice,'Peer score: 50 points');
   await bob.getByRole('button',{name:'Leave room',exact:true}).click(); await text(bob,'Create or join a room'); await text(alice,'Waiting for another participant');
   assert.equal(errors.length,0, errors.join('\n'));
-  console.log('PASS: enrollment response loss restores identical identity with exactly two profiles; turn-3 peer feedback, private comments, score polling and exactly-once feedback retry; two isolated Chromium contexts: profiles, invite join, lobby polling, scenario, role isolation, private Coach, lost-response retry after reload (one shared row), shared chat, private pending action, waiting, joint advancement, history, refresh restoration, leave/member polling; mocked uncertain UI requires acknowledgement and sends fenced attempt; no browser exceptions.');
-} finally { if(browser) await browser.close(); for(const p of procs) p.kill(); await new Promise(r=>setTimeout(r,800)); rmSync(temp,{recursive:true,force:true}); } })().catch(e=>{ console.error(e); process.exitCode=1; });
+  console.log('PASS: landing at 375/768/1024/1440px without overflow, profile fields/edit/reload, Create/Join Room; enrollment response loss restores identical identity with exactly two profiles; turn-3 peer feedback, private comments, score polling and exactly-once feedback retry; two isolated Chromium contexts: profiles, invite join, lobby polling, scenario, role isolation, private Coach, lost-response retry after reload (one shared row), shared chat, private pending action, waiting, joint advancement, history, refresh restoration, leave/member polling; mocked uncertain UI requires acknowledgement and sends fenced attempt; no browser exceptions.');
+} finally { if(browser) await browser.close(); for(const p of procs) p.kill(); await new Promise(r=>setTimeout(r,800)); rmSync(temp,{recursive:true,force:true}); } })().catch(e=>{ console.error(e.message?.split('Call log:')[0] || 'UI smoke failed'); process.exitCode=1; });
