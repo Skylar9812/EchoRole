@@ -21,6 +21,7 @@ async function idle(page) { await page.waitForTimeout(100); await waitFor(async(
   const a=await browser.newContext({viewport:{width:1440,height:1000}}), b=await browser.newContext();
   const alice=await a.newPage(), bob=await b.newPage(); const errors=[];
   for (const p of [alice,bob]) p.on('pageerror', e=>errors.push(e.message));
+  async function capture(name, fullPage=true) { if(process.env.ECHOROLE_SCREENSHOTS) { mkdirSync(process.env.ECHOROLE_SCREENSHOTS,{recursive:true}); await alice.evaluate(()=>scrollTo(0,0)); await alice.screenshot({path:join(process.env.ECHOROLE_SCREENSHOTS,name+'.png'),fullPage}); } }
   let originalIdentity;
   await alice.route('**/api/echorole/profiles', async route => {
     const response = await route.fetch(); originalIdentity = (await response.json()).user_id;
@@ -70,26 +71,53 @@ async function idle(page) { await page.waitForTimeout(100); await waitFor(async(
 
   const options=await alice.locator('select').nth(1).locator('option').evaluateAll(xs=>xs.map(x=>x.value));
   await alice.locator('select').nth(1).selectOption(options[1]); await alice.getByRole('button',{name:'Start session',exact:true}).click();
-  await text(alice,'Your role: role_a'); await text(bob,'Your role: role_b');
-  await alice.getByLabel('Message your Coach').fill('ALICE_PRIVATE_ONLY'); await alice.getByRole('button',{name:'Send / retry Coach message',exact:true}).click(); await idle(alice); await text(alice,'ALICE_PRIVATE_ONLY');
+  await text(alice,'PRIVATE · ROLE A'); await text(bob,'PRIVATE · ROLE B');
+  for (const width of [1440,1024,768,375]) {
+    await alice.setViewportSize({width,height:1000});
+    assert(await alice.evaluate(()=>document.documentElement.scrollWidth<=innerWidth), `Session overflow at ${width}px`);
+    await capture(`active-session-${width}`);
+    await capture(`active-session-${width}-viewport`,false);
+  }
+  await alice.setViewportSize({width:1440,height:1000});
+  await alice.getByLabel('Message your Coach').fill('ALICE_PRIVATE_ONLY'); await alice.getByRole('button',{name:'Send reflection',exact:true}).click(); await idle(alice); await text(alice,'ALICE_PRIVATE_ONLY');
   assert(!(await bob.locator('body').innerText()).includes('ALICE_PRIVATE_ONLY'));
+  const privateA = await (await alice.request.get(origin+'/api/echorole/rooms/'+(await alice.evaluate(()=>sessionStorage.getItem('echorole-room')))+'/session')).json();
+  const briefA = await (await alice.request.get(origin+'/api/echorole/sessions/'+privateA.id+'/private')).json();
+  const briefB = await (await bob.request.get(origin+'/api/echorole/sessions/'+privateA.id+'/private')).json();
+  assert.equal(briefA.role_name,'role_a'); assert.equal(briefB.role_name,'role_b');
+  assert(!(await alice.locator('body').innerText()).includes(briefB.brief));
+  assert(!(await bob.locator('body').innerText()).includes(briefA.brief));
+  if(process.env.ECHOROLE_SCREENSHOTS) await alice.getByRole('heading',{name:'AI Coach — private',exact:true}).locator('..').screenshot({path:join(process.env.ECHOROLE_SCREENSHOTS,'active-session-coach.png')});
   // Simulate loss of a successful shared-message response, then reload and retry original ID.
   let lost=false;
   await alice.route('**/api/echorole/rooms/*/messages', async route=>{ if(route.request().method()==='POST' && !lost) {lost=true; await route.fetch(); await route.abort('failed');} else await route.continue(); });
-  await alice.getByLabel('Shared message',{exact:true}).fill('RETRY_SHARED_ONCE'); await alice.getByRole('button',{name:'Send / retry shared message',exact:true}).click(); await idle(alice);
+  await alice.getByLabel('Shared message',{exact:true}).fill('RETRY_SHARED_ONCE'); await alice.getByRole('button',{name:'Send message',exact:true}).click(); await idle(alice);
   await alice.reload(); await text(alice,'Unconfirmed requests'); await alice.getByRole('button',{name:'Retry original request',exact:true}).click(); await idle(alice);
   await text(bob,'RETRY_SHARED_ONCE'); assert.equal(await bob.getByText('RETRY_SHARED_ONCE',{exact:true}).count(),1);
-  await alice.getByLabel('Your action for turn 1').fill('ALICE_ACTION_PRIVATE I ask my colleague to explain the blockers and propose a realistic deadline together.'); await alice.getByRole('button',{name:'Submit / retry action',exact:true}).click(); await idle(alice); await text(alice,'Action submitted. Waiting');
+  await alice.getByLabel('Your action for turn 1').fill('ALICE_ACTION_PRIVATE I ask my colleague to explain the blockers and propose a realistic deadline together.'); await alice.getByRole('button',{name:'Submit action',exact:true}).click(); await idle(alice); await text(alice,'Action submitted. Waiting');
   assert(!(await bob.locator('body').innerText()).includes('ALICE_ACTION_PRIVATE'));
-  await bob.getByLabel('Your action for turn 1').fill('I explain my priorities and ask for a practical compromise.'); await bob.getByRole('button',{name:'Submit / retry action',exact:true}).click(); await idle(bob);
+  await capture('active-session-waiting');
+  await bob.getByLabel('Your action for turn 1').fill('I explain my priorities and ask for a practical compromise.'); await bob.getByRole('button',{name:'Submit action',exact:true}).click(); await idle(bob);
   await text(alice,'— Turn 2'); await text(bob,'— Turn 2'); await text(alice,'Progression history — shared');
-  await alice.reload(); await text(alice,'Your role: role_a'); await text(alice,'— Turn 2');
+  await alice.reload(); await text(alice,'PRIVATE · ROLE A'); await text(alice,'— Turn 2');
+  await alice.getByText('Turn 1',{exact:true}).filter({has:alice.locator('xpath=self::summary')}).click();
+  await capture('active-session-progression');
+  // Presentation fixture: the local provider completes too quickly to capture reliably.
+  await alice.route('**/api/echorole/sessions/*/turn', async route => { const r=await route.fetch(); const body=await r.json(); await route.fulfill({json:{...body,state:'generating',submitted:true,other_submitted:true}}); });
+  await alice.getByRole('button',{name:'Refresh status',exact:true}).click();
+  await text(alice,'Generating the next scene. Your action is saved');
+  assert.equal(await alice.getByRole('button',{name:'Submit action',exact:true}).count(),0);
+  await capture('active-session-generating');
+  await alice.unroute('**/api/echorole/sessions/*/turn');
   // UI fixture only: durable recovery semantics are covered by backend tests.
   let recovered = null;
   await alice.route('**/api/echorole/sessions/*/turn', async route => { const r=await route.fetch(); const body=await r.json(); await route.fulfill({json:{...body,state:'uncertain',attempt_id:'ui-attempt'}}); });
   await alice.route('**/api/echorole/sessions/*/turn/recover', async route => { recovered=route.request().postDataJSON(); await route.fulfill({json:{}}); });
   await alice.getByRole('button',{name:'Refresh status',exact:true}).click();
   const recovery = alice.getByRole('button',{name:'Recover generation',exact:true}); await recovery.waitFor(); assert(await recovery.isDisabled());
+  assert.equal(await alice.getByRole('button',{name:'Submit action',exact:true}).count(),0);
+  await capture('active-session-recovery');
+  if(process.env.ECHOROLE_SCREENSHOTS) await recovery.locator('xpath=ancestor::section[1]').screenshot({path:join(process.env.ECHOROLE_SCREENSHOTS,'active-session-recovery-panel.png')});
   await alice.getByRole('checkbox').check(); await recovery.click(); await idle(alice);
   assert.deepEqual(recovered,{turn_index:2,attempt_id:'ui-attempt',acknowledge_uncertain:true});
   await alice.unroute('**/api/echorole/sessions/*/turn'); await alice.unroute('**/api/echorole/sessions/*/turn/recover');
@@ -97,7 +125,7 @@ async function idle(page) { await page.waitForTimeout(100); await waitFor(async(
   await text(alice,'Peer feedback becomes available from turn 3.');
   for (const p of [alice,bob]) {
     await p.getByLabel('Your action for turn 2').fill('I listen carefully to the other perspective and suggest a practical next step together.');
-    await p.getByRole('button',{name:'Submit / retry action',exact:true}).click(); await idle(p);
+    await p.getByRole('button',{name:'Submit action',exact:true}).click(); await idle(p);
   }
   await text(alice,'— Turn 3'); await text(bob,'— Turn 3');
   let feedbackLost = false;
@@ -116,6 +144,7 @@ async function idle(page) { await page.waitForTimeout(100); await waitFor(async(
   await bob.getByRole('button',{name:'Submit feedback',exact:true}).click(); await idle(bob);
   await text(alice,'Peer score: 50 points');
   await bob.getByRole('button',{name:'Leave room',exact:true}).click(); await text(bob,'Create or join a room'); await text(alice,'Waiting for another participant');
+  await require('./stale_identity.cjs')({browser,origin,root,env,text,idle,alice});
   assert.equal(errors.length,0, errors.join('\n'));
   console.log('PASS: landing at 375/768/1024/1440px without overflow, profile fields/edit/reload, Create/Join Room; enrollment response loss restores identical identity with exactly two profiles; turn-3 peer feedback, private comments, score polling and exactly-once feedback retry; two isolated Chromium contexts: profiles, invite join, lobby polling, scenario, role isolation, private Coach, lost-response retry after reload (one shared row), shared chat, private pending action, waiting, joint advancement, history, refresh restoration, leave/member polling; mocked uncertain UI requires acknowledgement and sends fenced attempt; no browser exceptions.');
 } finally { if(browser) await browser.close(); for(const p of procs) p.kill(); await new Promise(r=>setTimeout(r,800)); rmSync(temp,{recursive:true,force:true}); } })().catch(e=>{ console.error(e.message?.split('Call log:')[0] || 'UI smoke failed'); process.exitCode=1; });

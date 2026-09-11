@@ -77,6 +77,9 @@ async function handle(request: NextRequest, context: Context) {
       });
       return response;
     }
+    // Distinguish a rejected credential from a normal first visit without one.
+    // Never clear it automatically: identity reset remains an explicit action.
+    if (upstream.status === 401) return json({ ...data, code: "stale_identity" }, 401);
     return json(data, upstream.status);
   } catch {
     return json({ detail: "EchoRole API unavailable" }, 502);

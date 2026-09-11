@@ -1,13 +1,13 @@
 import type { Profile, ProfileInput, Room, Member, Scenario, Session, SharedMessage, PrivateState, CoachMessage, CoachResult, Suggestion, TurnStatus, ProgressionEntry, ChatSend, CoachSend, ActionSend, Recovery, PeerFeedbackState, PeerFeedbackSend, PeerScore } from './contracts';
 export class ApiError extends Error {
-  constructor(public status: number, message: string) { super(message); }
+  constructor(public status: number, message: string, public code?: string) { super(message); }
 }
 async function request<T>(path: string, body?: unknown, method = body === undefined ? 'GET' : 'POST'): Promise<T> {
   let response: Response;
   try { response = await fetch(`/api/echorole/${path}`, { method, credentials: 'same-origin', cache: 'no-store', headers: body === undefined ? {} : {'Content-Type': 'application/json'}, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(125000) }); }
   catch { throw new ApiError(0, 'Connection interrupted. The request may still finish. Retry the same request or refresh status.'); }
   const data = await response.json();
-  if (!response.ok) throw new ApiError(response.status, typeof data.detail === 'string' ? data.detail : 'Invalid request. Check the fields and retry.');
+  if (!response.ok) throw new ApiError(response.status, typeof data.detail === 'string' ? data.detail : 'Invalid request. Check the fields and retry.', data.code);
   return data as T;
 }
 export const api = {

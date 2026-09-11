@@ -275,3 +275,34 @@ recovery, and 375/768/1024/1440px layouts without overflow. Existing identity
 recovery, private/shared separation, retry, turn, and feedback checks still pass.
 Desktop/mobile screenshots were reviewed. No final illustration assets added;
 the reusable CSS doorway remains a temporary illustration. Stop at Lobby / Setup.
+
+## Active Session visual pass and stale local identity recovery
+
+Continued from `636ca86`. Landing and Lobby remain the approved visual source of
+truth and their components/styles are unchanged. Active Session now uses a
+narrative-centered composition, quiet context, a private brief and Coach notebook,
+secondary private guidance, a clear action/waiting area, warm shared chat, and
+compact progression disclosures. Existing Brand and landing tokens are reused in
+`active-session.tsx` and its scoped CSS. At 1024px context moves below the main
+workspace; at 768px and below the scene, brief, action, guidance, Coach, chat, history,
+feedback and utilities stack in that order. No second design system or final art.
+
+Rejected upstream identity credentials now carry a `stale_identity` error code so
+startup can distinguish them from a first visit. The explicit "Start with a new
+profile" action uses the existing same-origin DELETE identity handler to expire
+both HttpOnly cookies, clears tab identity/session/retry state, and restores normal
+profile creation. No identity validation, FastAPI, Python services or schema changed.
+Valid identities and lost-response enrollment recovery are retained.
+
+Verification: production build and typecheck; 45 backend tests; live transport
+smoke (HttpOnly, CSRF, membership, isolation and retry); two independent Chromium
+contexts with disposable data/local AI. Browser checks cover exact private-role
+separation, Coach, suggestions, shared chat, stable retries after response loss,
+action waiting and real joint advancement, history, feedback, reload and leave.
+Generating/uncertain presentation uses controlled response fixtures; explicit
+acknowledgement and fenced recovery payloads are checked, while durable generation
+and recovery are covered by backend tests. Deleted-profile regression verifies
+401 -> explicit reset -> cookies/tab state cleared -> new UUID -> room/reload,
+with an existing valid participant unaffected. Layouts at 1440/1024/768/375px have
+no horizontal overflow. No shared Python changed, so Streamlit smoke was not rerun
+for this pass. No push, merge, global polish, or additional page redesign.
