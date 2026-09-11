@@ -8,5 +8,3 @@ textarea { min-height: 6rem; }
 button { padding: .5rem .8rem; margin: .35rem .5rem .35rem 0; font: inherit; cursor: pointer; }
 button:disabled { cursor: default; }
 .text { white-space: pre-wrap; overflow-wrap: anywhere; }
-[role=alert] { border-left: 4px solid #a22; padding: .5rem 1rem; }
-:focus-visible { outline: 3px solid #265db1; outline-offset: 2px; }

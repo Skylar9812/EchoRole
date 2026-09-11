@@ -1,5 +1,7 @@
 'use client';
 
+import { Feedback } from './ui-feedback';
+
 import type { FormEvent, ReactNode } from 'react';
 import type { Profile } from '@/lib/contracts';
 import styles from './landing.module.css';
@@ -36,7 +38,7 @@ function Scene() {
 
 export default function Landing({ profile, score, busy, loading = false, feedback, onProfile, onCreate, onJoin, onClearIdentity }: LandingProps) {
   const unavailable = busy || loading;
-  return <div className={styles.page}>
+  return <div data-echorole className={styles.page}>
     <a className={styles.skip} href="#character">Skip to your profile</a>
     <div className={styles.shell}>
       <header className={styles.header}>
@@ -62,11 +64,11 @@ export default function Landing({ profile, score, busy, loading = false, feedbac
           <Scene />
         </section>
 
-        {loading && <p className={styles.loading} role="status">Getting your space ready. Recovering your profile…</p>}
-        <div className={styles.feedback} aria-live="polite">{feedback}</div>
+        {loading && <p className={styles.loading} role="status" data-loading>Getting your space ready. Recovering your profile…</p>}
+        <Feedback>{feedback}</Feedback>
 
         <div className={styles.entry}>
-          <section className={styles.character} id="character" aria-labelledby="character-title">
+          <section className={styles.character} id="character" tabIndex={-1} aria-labelledby="character-title">
             <div className={styles.panelHeading}><span className={styles.sectionNumber}>01 / YOU</span><h2 id="character-title">Build your character</h2></div>
             <div className={styles.characterBody}>
               <div className={styles.portraitColumn}>
@@ -95,13 +97,13 @@ export default function Landing({ profile, score, busy, loading = false, feedbac
             </div>
             <div className={styles.joinPanel}>
               <div className={styles.invitation} data-illustration-slot="invitation" aria-hidden="true"><svg width="54" height="42" viewBox="0 0 54 42" fill="none"><rect x="2" y="2" width="50" height="38" rx="2" stroke="currentColor" /><path d="m3 4 24 19L51 4M3 39l17-16m31 16L34 23" stroke="currentColor" /></svg></div>
-              <div className={styles.joinCopy}><span className={styles.sectionNumber}>ALREADY INVITED?</span><h2>Join a room</h2><form onSubmit={onJoin}><label className={styles.srOnly} htmlFor="entry-code">Invite code</label><input id="entry-code" name="code" placeholder="Enter your invite code" required autoComplete="off" spellCheck={false} disabled={loading} /><button className={styles.joinButton} disabled={unavailable || !profile}>Join room<Arrow /></button></form></div>
+              <div className={styles.joinCopy}><span className={styles.sectionNumber}>ALREADY INVITED?</span><h2>Join a room</h2><form onSubmit={onJoin}><label className={styles.srOnly} htmlFor="entry-code">Invite code</label><input id="entry-code" name="code" placeholder="Invite code" required autoComplete="off" spellCheck={false} disabled={loading} /><button className={styles.joinButton} disabled={unavailable || !profile}>Join room<Arrow /></button></form></div>
             </div>
             <p className={styles.roomHint}>{profile ? 'Your profile is ready. Choose where your story begins.' : 'Create your profile first, then create or join a room.'}</p>
           </section>
         </div>
       </main>
-      <footer className={styles.footer}><p className={styles.footerNote}>Practice today.<br /><span>A kinder tomorrow.</span></p><div className={styles.footerRight}><span className={styles.footerWords}>PEOPLE <i /> CONVERSATIONS <i /> POSSIBILITIES</span><details className={styles.identity}><summary>Local identity</summary><p>Your profile is remembered in this browser.</p><button onClick={onClearIdentity} disabled={unavailable}>Clear local identity</button></details></div></footer>
+      <footer className={styles.footer}><p className={styles.footerNote}>Practice today.<br /><span>A kinder tomorrow.</span></p><div className={styles.footerRight}><span className={styles.footerWords}><span>PEOPLE</span><i /><span>CONVERSATIONS</span><i /><span>POSSIBILITIES</span></span><details className={styles.identity}><summary>Local identity</summary><p>Your profile is remembered in this browser.</p><button data-tone="destructive" onClick={onClearIdentity} disabled={unavailable}>Clear local identity</button></details></div></footer>
     </div>
   </div>;
 }

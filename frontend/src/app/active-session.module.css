@@ -12,7 +12,7 @@
 .statusBar strong::before { content: ''; display: inline-block; width: 6px; height: 6px; background: var(--sage); border-radius: 50%; margin: 0 9px 1px 0; }
 .page .workspace { display: grid; grid-template-columns: minmax(170px, .7fr) minmax(0, 2fr) minmax(260px, 1.12fr); grid-template-areas: 'context scene move' 'context brief guidance' 'context coach chat' 'context history peer'; gap: 30px 34px; max-width: none; padding: 12px 0 40px; margin: 0; align-items: start; }
 .workspace > * { min-width: 0; }
-.page :global(.section-label) { display: block; font: 10px/1.6 'Segoe UI', Arial, sans-serif; letter-spacing: 1.7px; color: var(--sage); margin-bottom: 14px; }
+.page :global(.section-label) { display: block; font: 10px/1.6 var(--sans); letter-spacing: 1.7px; color: var(--sage); margin-bottom: 14px; }
 .page :global(.section-caption) { color: var(--muted); font-size: 13px; line-height: 1.7; margin: 12px 0 20px; }
 .page h2 { font-size: 27px; letter-spacing: -.7px; margin-bottom: 17px; }
 .page h3 { font-family: var(--serif); font-weight: 400; font-size: 20px; line-height: 1.4; margin: 22px 0 9px; }
@@ -20,14 +20,13 @@
 .page details { border-top: 1px solid var(--line); margin-top: 21px; padding-top: 7px; }
 .page summary { cursor: pointer; min-height: 44px; align-content: center; font-size: 13px; color: var(--sage); padding: 8px 0; }
 .page label { display: block; font-size: 13px; line-height: 1.6; margin: 17px 0 8px; }
-.page input:not([type=checkbox]), .page textarea, .page select { display: block; width: 100%; min-width: 0; padding: 12px; margin-top: 8px; border: 1px solid var(--field-line); border-radius: 8px; background: var(--paper); color: var(--ink); font: inherit; line-height: 1.65; }
+.page input:not([type=checkbox]), .page textarea, .page select { display: block; width: 100%; min-width: 0; padding: 12px; margin-top: 8px; border: 1px solid var(--field-line); border-radius: var(--radius-control); background: var(--paper); color: var(--ink); font: inherit; line-height: 1.65; }
 .page textarea { min-height: 106px; resize: vertical; }
 .page input[type=checkbox] { width: 17px; height: 17px; vertical-align: middle; margin-right: 8px; accent-color: var(--sage); }
-.page select:focus-visible { outline: 2px solid var(--sage); outline-offset: 4px; }
-.page button { border: 1px solid var(--field-line); border-radius: 8px; background: transparent; padding: 10px 15px; color: var(--sage); font-size: 13px; max-width: 100%; }
+.page button { border: 1px solid var(--field-line); border-radius: var(--radius-control); background: transparent; padding: 10px 15px; color: var(--sage); font-size: 13px; max-width: 100%; }
 .page button:hover:not(:disabled) { background: var(--sage-light); }
 .page form > button { margin-top: 8px; }
-.scene { grid-area: scene; background: var(--paper); padding: 30px 32px 26px; border: 1px solid var(--line); border-radius: 10px 40px 10px 10px; box-shadow: 0 8px 24px #4d564608; }
+.scene { grid-area: scene; background: var(--paper); padding: 30px 32px 26px; border: 1px solid var(--line); border-radius: 10px 40px 10px 10px; box-shadow: var(--shadow-soft); }
 .page .scene h1 { font-size: clamp(34px, 3.1vw, 47px); letter-spacing: -1.6px; line-height: 1.15; margin-bottom: 15px; }
 .sceneTitle { font-size: 12px; color: var(--sage); line-height: 1.6; }
 .sceneRule { height: 1px; background: var(--line); margin: 25px 0; position: relative; }
@@ -49,7 +48,6 @@
 .coach strong, .chat strong { font-size: 12px; font-weight: 500; color: var(--sage); }
 .page :global(.coach-history) { max-height: 420px; overflow-y: auto; scrollbar-width: thin; padding-right: 9px; }
 .page :global(.coach-history):empty { display: none; }
-.page :global(.coach-history):focus-visible { outline: 2px solid var(--sage); outline-offset: 4px; }
 .chat { grid-area: chat; padding: 20px 0 0; border-top: 1px solid var(--line); }
 .page .chat h2 { font-size: 24px; }
 .chat section > div { padding: 13px 15px; background: #f0ece2; border-radius: 7px; margin: 14px 0; }
@@ -60,7 +58,7 @@
 .context { grid-area: context; padding: 7px 10px 0 0; font-size: 13px; color: var(--muted); }
 .identity { display: flex; align-items: center; gap: 12px; margin: 20px 0 12px; }
 .identity > span { width: 39px; height: 39px; flex-shrink: 0; border-radius: 50%; background: var(--sage-light); display: grid; place-items: center; font: 21px var(--serif); color: var(--sage); }
-.page .identity h2 { font: 500 15px/1.5 'Segoe UI', Arial, sans-serif; letter-spacing: 0; margin: 0 0 4px; overflow-wrap: anywhere; color: var(--ink); }
+.page .identity h2 { font: 500 15px/1.5 var(--sans); letter-spacing: 0; margin: 0 0 4px; overflow-wrap: anywhere; color: var(--ink); }
 .score { font-size: 12px; }
 .page .contextGroup { margin-top: 26px; padding-top: 21px; border-top: 1px solid var(--line); }
 .page .contextGroup h3 { margin: 0 0 13px; font-size: 18px; color: var(--ink); }
@@ -75,18 +73,10 @@
 .page .utilities { margin-top: 18px; }
 .utilityButtons { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 14px; }
 .page .utilityButtons button { padding: 6px 0; border: 0; font-size: 12px; }
-.page .note { font: italic 20px/1.6 var(--serif); color: #75816d; margin: 35px 0; }
+.page .note { font: italic 20px/1.6 var(--serif); color: var(--muted); margin: 35px 0; }
 .peer { grid-area: peer; border-top: 1px solid var(--line); padding-top: 25px; }
 .page .peer h2 { font-size: 23px; }
 .peer p { font-size: 13px; line-height: 1.8; }
-.page [role=alert] { background: #f4eadb; border: 1px solid #c3ab89; border-radius: 8px; padding: 17px; font-size: 14px; line-height: 1.75; margin: 14px 0; }
-.page [role=alert] label { font-size: 13px; }
-.page [role=alert] button { margin-top: 12px; }
-.feedback > section { padding: 20px; background: var(--paper); border: 1px solid var(--line); border-radius: 8px; margin: 12px 0 20px; }
-.feedback h2 { font-size: 24px; }
-.feedback p { font-size: 13px; line-height: 1.8; }
-.feedback button { margin: 8px 8px 8px 0; }
-.feedback > p { padding-bottom: 12px; color: var(--sage); }
 .footer { padding: 22px 0 30px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
 .footer em { font: italic 17px var(--serif); margin-left: 10px; }
 @media (max-width: 1199px) {

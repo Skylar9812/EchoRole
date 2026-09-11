@@ -1,0 +1,58 @@
+/* Shared EchoRole foundations. Page modules own their approved compositions. */
+[data-echorole] {
+  --ivory: #f7f5ee; --paper: #fcfaf5; --ink: #202d2b; --sage: #526e59;
+  --sage-light: #e4e9df; --muted: #62685f; --line: #d9d9ce; --field-line: #969e8f;
+  --serif: Georgia, 'Times New Roman', serif; --sans: 'Segoe UI', Arial, sans-serif;
+  --radius-control: 8px; --radius-surface: 12px; --focus: #405c47;
+  --warning-paper: #f4eadb; --warning-line: #c3ab89; --destructive: #805442;
+  --space-1: 8px; --space-2: 16px; --space-3: 24px; --space-4: 32px;
+  --shadow-soft: 0 8px 24px #4d564608; --motion-feedback: 160ms;
+  color-scheme: light;
+}
+[data-echorole] :is(button, input, textarea, select) { font-family: var(--sans); }
+[data-echorole] :is(button, summary, a) { touch-action: manipulation; }
+[data-echorole] :is(button, input, select) { min-height: 44px; }
+[data-echorole] :is(input:not([type=checkbox]), textarea, select) {
+  border-radius: var(--radius-control); line-height: 1.6;
+  transition: border-color var(--motion-feedback), box-shadow var(--motion-feedback);
+}
+[data-echorole] :is(input, textarea)::placeholder { color: var(--muted); opacity: 1; }
+[data-echorole] :is(button, input, textarea, select, a, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--focus); outline-offset: 4px;
+}
+[data-echorole] :is(input:not([type=checkbox]), select):user-invalid {
+  border-color: var(--destructive); box-shadow: inset 3px 0 var(--destructive);
+}
+[data-echorole] button { transition: background-color var(--motion-feedback), border-color var(--motion-feedback), box-shadow var(--motion-feedback); }
+[data-echorole] button:active:not(:disabled) { box-shadow: inset 0 2px 4px #202d2b26; }
+[data-echorole] button[data-tone=destructive] { color: var(--destructive); }
+[data-echorole] button[data-tone=destructive]:hover:not(:disabled) { background: var(--warning-paper); }
+[data-echorole] [data-notice], [data-echorole] [data-feedback] > [role=alert] {
+  background: var(--warning-paper); border: 1px solid var(--warning-line);
+  border-radius: var(--radius-control); padding: var(--space-2); margin: 14px 0;
+  color: var(--ink); font-size: 14px; line-height: 1.75; overflow-wrap: anywhere;
+}
+[data-echorole] [data-feedback]:empty { display: none; }
+[data-echorole] [data-feedback] { position: relative; z-index: 2; font-size: 13px; }
+[data-echorole] [data-feedback] > section { padding: var(--space-2); margin: 14px 0; background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius-control); }
+[data-echorole] [data-feedback] h2 { font-size: 24px; line-height: 1.3; margin-bottom: 12px; }
+[data-echorole] [data-feedback] p { line-height: 1.8; }
+[data-echorole] [data-feedback] button, [data-echorole] [data-notice] button {
+  padding: 10px 14px; margin: 12px 8px 0 0; border: 1px solid var(--field-line);
+  border-radius: var(--radius-control); background: var(--paper); color: var(--sage); font-size: 13px;
+}
+[data-echorole] [data-feedback] button:hover:not(:disabled), [data-echorole] [data-notice] button:hover:not(:disabled) { background: var(--sage-light); }
+[data-echorole] [data-feedback] > [role=status] { color: var(--sage); padding: 12px 0; }
+[data-echorole] [data-feedback] [data-offline] { border-bottom: 1px solid var(--warning-line); color: var(--destructive); }
+[data-echorole] [data-loading]::before { content: ''; display: inline-block; width: 7px; height: 7px; margin: 0 9px 1px 0; border-radius: 50%; background: var(--sage); animation: breathe 1.4s ease-in-out infinite; }
+[data-echorole] [data-reveal] { animation: reveal var(--motion-feedback) ease-out; }
+[data-echorole] [data-empty] { color: var(--muted); font-size: 14px; line-height: 1.8; padding: 8px 0; }
+[data-echorole] [data-reading] { max-width: 70ch; }
+@keyframes breathe { 50% { opacity: .35; } }
+@keyframes reveal { from { opacity: .35; } to { opacity: 1; } }
+@media (max-width: 800px) {
+  [data-echorole][data-echorole] :is(input:not([type=checkbox]), textarea, select) { font-size: 16px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-echorole] *, [data-echorole] *::before, [data-echorole] *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}

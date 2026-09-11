@@ -37,6 +37,7 @@ async function idle(page) { await page.waitForTimeout(100); await waitFor(async(
       await alice.screenshot({path:join(process.env.ECHOROLE_SCREENSHOTS,`landing-${width}.png`),fullPage:true});
     }
   }
+  await require('./polish_checks.cjs')(alice,'landing');
   await alice.getByLabel('Display name').fill('Alice UI');
   await alice.getByLabel('MBTI (optional)',{exact:true}).fill('INFJ');
   await alice.getByLabel('Communication / value priorities',{exact:true}).fill('Listening and trust');
@@ -69,9 +70,13 @@ async function idle(page) { await page.waitForTimeout(100); await waitFor(async(
 
   await require('./lobby_checks.cjs')({alice,bob,origin,idle,text,waitFor,code});
 
+  await require('./polish_checks.cjs')(alice,'lobby');
   const options=await alice.locator('select').nth(1).locator('option').evaluateAll(xs=>xs.map(x=>x.value));
   await alice.locator('select').nth(1).selectOption(options[1]); await alice.getByRole('button',{name:'Start session',exact:true}).click();
   await text(alice,'PRIVATE · ROLE A'); await text(bob,'PRIVATE · ROLE B');
+  await require('./polish_checks.cjs')(alice,'active');
+  await a.setOffline(true); await text(alice,'You’re offline.'); await a.setOffline(false);
+  await waitFor(async()=>await alice.getByText('You’re offline.',{exact:false}).count()===0,'Online status restored');
   for (const width of [1440,1024,768,375]) {
     await alice.setViewportSize({width,height:1000});
     assert(await alice.evaluate(()=>document.documentElement.scrollWidth<=innerWidth), `Session overflow at ${width}px`);

@@ -306,3 +306,29 @@ and recovery are covered by backend tests. Deleted-profile regression verifies
 with an existing valid participant unaffected. Layouts at 1440/1024/768/375px have
 no horizontal overflow. No shared Python changed, so Streamlit smoke was not rerun
 for this pass. No push, merge, global polish, or additional page redesign.
+
+## Global UI polish
+
+Continued from `8f4fa84`; all three approved layouts and information priorities
+are retained. Shared foundations now live in `theme.css`: palette, typography,
+control radii, focus, feedback surfaces, soft shadow and reduced-motion rules.
+`Feedback` and `ConnectionNotice` replace repeated page-specific presentation.
+Offline messaging observes browser connectivity only and never retries mutations.
+Small text contrast, placeholder readability, 44px controls, skip-link focus,
+scenario reading measure, mobile footer wrapping and destructive utility tone
+were refined. Loading dots and keyed message/scene fades are restrained and fully
+disabled by reduced-motion preference. Cleared message composers deliberately do
+not receive invalid styling after successful submission. Empty/recovery copy is
+clarified without rewriting scenarios, AI content or recovery requirements.
+
+Verification: production build/typecheck, 45 backend tests, live transport smoke,
+and the complete two-context browser suite including identity reset, privacy,
+polling, retry, Coach, shared messages, actions, waiting, progression, peer feedback,
+reload and leave. Generating/uncertain UI remains fixture-tested alongside backend
+recovery tests. All pages are captured at 1440/1024/768/375px without overflow.
+Added practical browser checks for visible text contrast (excluding decorative and
+disabled content), labels, control target height, keyboard focus, skip destinations,
+reduced motion and offline/online presentation. Screenshots were visually reviewed;
+this is not a screen-reader certification. Final illustration slots remain temporary.
+No backend, API client, authorization, polling or mutation logic changed. No push,
+merge or deployment.

@@ -1,5 +1,7 @@
 'use client';
 
+import { Feedback, ConnectionNotice } from './ui-feedback';
+
 import type { ReactNode } from 'react';
 import type { Profile, Room, Member, Session, TurnStatus, PrivateState } from '@/lib/contracts';
 import { Brand } from './editorial';
@@ -25,7 +27,7 @@ export default function ActiveSession(p: Props) {
     : t.state === 'advanced' ? 'Advanced'
     : t.submitted && t.other_submitted ? 'Ready to advance'
     : t.submitted ? 'Waiting for partner' : 'Action required';
-  return <div className={`${base.page} ${styles.page}`}>
+  return <div data-echorole className={`${base.page} ${styles.page}`}>
     <a className={base.skip} href="#current-scene">Skip to current situation</a>
     <div className={`${base.shell} ${styles.shell}`}>
       <header className={`${base.header} ${styles.header}`} id="top">
@@ -38,14 +40,14 @@ export default function ActiveSession(p: Props) {
         <span>Partner: {t.other_submitted ? 'Submitted' : 'Waiting'}</span>
         <span>{p.members.length} participant{p.members.length === 1 ? '' : 's'}</span>
       </div>
-      <div className={styles.feedback}>{p.feedback}{p.pollError && <div role="alert"><p>Updates unavailable: {p.pollError}. Displayed data may be stale.</p><button onClick={p.onRefresh}>Retry room updates</button></div>}</div>
+      <Feedback>{p.feedback}{p.pollError && <ConnectionNotice error={p.pollError} onRetry={p.onRefresh} />}</Feedback>
       <main className={styles.workspace}>
-        <article className={styles.scene} id="current-scene">
+        <article className={styles.scene} id="current-scene" tabIndex={-1}>
           <span className="section-label">TURN {String(t.current_turn).padStart(2, '0')} / THE CONVERSATION</span>
           <h1>Current Situation</h1>
           <p className={styles.sceneTitle}>{s.title} — Turn {t.current_turn}</p>
           <div className={styles.sceneRule} aria-hidden="true"><span /></div>
-          <p className={styles.story}>{t.current_situation}</p>
+          <p className={styles.story} data-reading data-reveal key={`${s.id}:${t.current_turn}`}>{t.current_situation}</p>
         </article>
         <div className={styles.brief}>{p.brief}</div>
         <div className={styles.move}>{p.action}</div>
@@ -64,7 +66,7 @@ export default function ActiveSession(p: Props) {
           <section className={styles.contextGroup}><span className="section-label">THE SCENARIO</span><h3>{s.title}</h3><details><summary>Scenario context</summary><p>{s.context}</p><p>{s.conflict}</p></details></section>
           <div className={styles.contextGroup}>{p.profileForm}</div>
           <details className={styles.utilities}><summary>Room utilities</summary>{p.setup}</details>
-          <div className={styles.utilityButtons}><button onClick={p.onRefresh}>Refresh status</button><button disabled={p.busy} onClick={p.onLeave}>Leave room</button></div>
+          <div className={styles.utilityButtons}><button onClick={p.onRefresh}>Refresh status</button><button disabled={p.busy} data-tone="destructive" onClick={p.onLeave}>Leave room</button></div>
           <p className={styles.note}>A little space<br />for another perspective.</p>
         </aside>
         <div className={styles.peer}>{p.peer}</div>

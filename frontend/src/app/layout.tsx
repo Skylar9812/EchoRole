@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import "./globals.css";
+import "./theme.css";
 
 export const metadata: Metadata = {
   title: "EchoRole — Every conversation has another path",

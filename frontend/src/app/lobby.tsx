@@ -1,5 +1,7 @@
 'use client';
 
+import { Feedback, ConnectionNotice } from './ui-feedback';
+
 import { useState, type FormEvent, type ReactNode } from 'react';
 import type { Member, Profile, Room, Scenario, SharedMessage } from '@/lib/contracts';
 import { Brand, Arrow, Doorway } from './editorial';
@@ -39,7 +41,7 @@ export default function Lobby(props: LobbyProps) {
   const loading = !room;
   const unavailable = busy || loading || !!pollError;
 
-  return <div className={`${base.page} ${styles.page}`}>
+  return <div data-echorole className={`${base.page} ${styles.page}`}>
     <a className={base.skip} href="#scenario-setup">Skip to scenario setup</a>
     <div className={base.shell}>
       <header className={`${base.header} ${styles.header}`} id="top">
@@ -61,12 +63,12 @@ export default function Lobby(props: LobbyProps) {
           <div><p className={styles.eyebrow}>THE PREPARATION ROOM</p><p className={styles.welcome}>A moment before <em>the conversation.</em></p></div>
           <p>Gather here. Choose a scenario.<br />Step into another point of view.</p>
         </div>
-        <div className={base.feedback}>{feedback}</div>
-        {pollError && <div className={styles.connectionError} role="alert"><p>Updates unavailable: {pollError}. Displayed data may be stale.</p><button className={base.saveButton} onClick={props.onRefresh}>Retry room updates</button></div>}
-        {loading && !pollError && <p className={styles.loading} role="status">Opening your preparation room. Loading room…</p>}
+        <Feedback>{feedback}</Feedback>
+        {pollError && <ConnectionNotice error={pollError} onRetry={props.onRefresh} />}
+        {loading && !pollError && <p className={styles.loading} role="status" data-loading>Opening your preparation room. Loading room…</p>}
 
         <div className={styles.layout}>
-          <section className={styles.scenarioSection} id="scenario-setup" aria-label="Scenario setup">
+          <section className={styles.scenarioSection} id="scenario-setup" tabIndex={-1} aria-label="Scenario setup">
             <div className={styles.selectionHeading}><span className={styles.eyebrow}>01 / CHOOSE YOUR SCENARIO</span><span className={styles.selectionHint}>A starting point, not a script.</span></div>
             <div className={styles.selectors}>
               <div><label htmlFor="lobby-category">Category</label><select id="lobby-category" value={category} onChange={event => props.onCategory(event.target.value)} disabled={busy || loading}><option value="">All categories</option>{[...new Set(catalog.map(item => item.category))].map(item => <option key={item}>{item}</option>)}</select></div>
@@ -78,7 +80,7 @@ export default function Lobby(props: LobbyProps) {
                 <div><span className={styles.eyebrow}>SCENARIO</span><h1 id="scenario-title">{selected?.title ?? 'Which conversation will you enter?'}</h1>{selected && <p className={styles.category}>{selected.category}</p>}</div>
                 <div className={styles.doorwayArt} aria-hidden="true"><Doorway /><span className={styles.floor} /></div>
               </div>
-              {selected ? <div className={styles.scenarioText} key={selected.id}>
+              {selected ? <div className={styles.scenarioText} data-reveal key={selected.id}>
                 <section aria-labelledby="context-title"><h2 id="context-title">Context</h2><p>{selected.context}</p></section>
                 <section className={styles.tension} aria-labelledby="tension-title"><h2 id="tension-title">Core tension</h2><p>{selected.conflict}</p></section>
                 <section aria-labelledby="opening-title"><h2 id="opening-title">Opening situation</h2><p>{selected.opening_situation}</p></section>
@@ -105,8 +107,8 @@ export default function Lobby(props: LobbyProps) {
             <section className={styles.chatSection} aria-labelledby="room-chat-title">
               <div className={styles.sideHeading}><h2 id="room-chat-title">Room conversation</h2><span className={styles.sharedLabel}>SHARED</span></div>
               <p className={styles.chatHint}>Visible to everyone in this room.</p>
-              <div className={styles.chatHistory} tabIndex={0} aria-label="Shared room messages">
-                {messages?.length ? <ol>{messages.map(message => <li key={message.id}><strong>{message.username ?? 'Participant'}</strong><p>{message.content}</p></li>)}</ol> : <p className={styles.chatEmpty}>{loading ? 'Loading shared messages…' : 'Say hello, or share a thought before you begin.'}</p>}
+              <div className={styles.chatHistory} role="region" tabIndex={0} aria-label="Shared room messages">
+                {messages?.length ? <ol>{messages.map(message => <li key={message.id} data-reveal><strong>{message.username ?? 'Participant'}</strong><p>{message.content}</p></li>)}</ol> : <p className={styles.chatEmpty}>{loading ? 'Loading shared messages…' : 'Say hello, or share a thought before you begin.'}</p>}
               </div>
               <form onSubmit={event => { event.preventDefault(); props.onSendChat(); }}>
                 <label htmlFor="lobby-chat">Shared message</label><textarea id="lobby-chat" value={chat} onChange={event => props.onChat(event.target.value)} required rows={2} placeholder="A few words to your partner…" disabled={loading} />
@@ -123,11 +125,11 @@ export default function Lobby(props: LobbyProps) {
                 <label htmlFor="lobby-priorities">Communication / value priorities</label><textarea id="lobby-priorities" name="priorities" defaultValue={profile.priorities} rows={2} />
                 <button className={base.saveButton} disabled={busy}>Save profile<Arrow /></button>
               </form>
-              <details className={styles.identity}><summary>Local identity</summary><button disabled={busy} onClick={props.onClearIdentity}>Clear local identity</button></details>
+              <details className={styles.identity}><summary>Local identity</summary><button disabled={busy} data-tone="destructive" onClick={props.onClearIdentity}>Clear local identity</button></details>
             </details>
           </aside>
         </div>
-        <footer className={styles.footer}><p>Take a breath. <em>There’s room for another perspective.</em></p><div><button className={styles.quietButton} onClick={props.onRefresh}>Refresh status</button><button className={styles.quietButton} onClick={props.onLeave} disabled={busy}>Leave room</button></div></footer>
+        <footer className={styles.footer}><p>Take a breath. <em>There’s room for another perspective.</em></p><div><button className={styles.quietButton} onClick={props.onRefresh}>Refresh status</button><button className={styles.quietButton} data-tone="destructive" onClick={props.onLeave} disabled={busy}>Leave room</button></div></footer>
       </main>
     </div>
   </div>;
