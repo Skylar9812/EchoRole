@@ -1,9 +1,9 @@
 from fastapi import APIRouter, HTTPException, Depends, Request
 import application as services
-from backend.identity import current_user, issue_identity
+from backend.identity import current_user, issue_identity, issue_enrollment, enrollment_user
 from backend.schemas import ProfileCreate, ProfileResponse, RoomResponse, MemberResponse, SessionCreate, SessionResponse
 from backend.authorization import room_member
-from backend.schemas import ProfileState, RoomCreate, JoinCode
+from backend.schemas import ProfileState, RoomCreate, JoinCode, EnrollmentResponse, PeerScore, PeerFeedbackState, PeerFeedbackSend
 from backend import legacy
 from backend.schemas import HealthResponse, ScenarioPreview
 
@@ -12,7 +12,7 @@ router = APIRouter()
 
 @router.post("/profiles", response_model=ProfileResponse, status_code=201)
 def create_profile(body: ProfileCreate, request: Request):
-    profile = services.create_profile(**body.model_dump())
+    profile = services.enroll_profile(enrollment_user(request), **body.model_dump())
     return {**profile, "access_token": issue_identity(request, profile["user_id"])}
 
 
@@ -88,3 +88,23 @@ def leave(room_id: int, user_id: str = Depends(current_user)):
 @router.post('/me', response_model=ProfileState)
 def update_me(body: ProfileCreate, user_id: str = Depends(current_user)):
     return services.update_profile(user_id, **body.model_dump())
+
+
+@router.post('/profiles/prepare', response_model=EnrollmentResponse)
+def prepare_profile(request: Request):
+    return {'enrollment_token': issue_enrollment(request)}
+
+
+@router.get('/me/score', response_model=PeerScore)
+def my_score(user_id: str = Depends(current_user)):
+    return services.peer_score(user_id)
+
+
+@router.get('/sessions/{session_id}/peer-feedback', response_model=PeerFeedbackState)
+def peer_feedback(session_id: int, user_id: str = Depends(current_user)):
+    return services.peer_feedback_state(session_id, user_id)
+
+
+@router.post('/sessions/{session_id}/peer-feedback', response_model=PeerFeedbackState)
+def submit_feedback(session_id: int, body: PeerFeedbackSend, user_id: str = Depends(current_user)):
+    return services.submit_peer_feedback(session_id, user_id, **body.model_dump())

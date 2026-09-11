@@ -48,7 +48,17 @@ def run():
         assert len(service.progression(sid, uid)) == 1
         assert service.suggestion(sid, uid)['text']
         assert service.private_state(sid, uid)['brief_history']
-        print('PASS: Streamlit welcome, room, scenario, shared chat, private Coach, action waiting, joint advancement, evolved brief/suggestion and active rerender')
+        service.submit_action(sid, uid, 2, 'I will listen closely and ask what practical steps would help us move forward.')
+        service.submit_action(sid, bob['user_id'], 2, 'I will explain my priorities and suggest that we agree on a realistic plan together.')
+        at.run()
+        assert not at.exception, at.exception
+        input_label(at.select_slider, 'Rating').set_value(4.5)
+        input_label(at.text_area, 'Private comment').set_value('Streamlit private feedback')
+        input_label(at.button, 'Submit Feedback').click().run()
+        assert not at.exception, at.exception
+        assert app.peer_score(bob['user_id'])['total_points'] == 45
+        assert app.peer_feedback_state(sid, uid)['feedback']['comment'] == 'Streamlit private feedback'
+        print('PASS: Streamlit welcome, room, scenario, shared chat, private Coach, action waiting, joint advancement, evolved brief/suggestion and active rerender; turn-3 peer feedback and 45-point scoring')
 
 
 if __name__ == '__main__':

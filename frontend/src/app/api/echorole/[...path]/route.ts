@@ -5,6 +5,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 type Context = { params: Promise<{ path: string[] }> };
+const enrollmentCookie = "echorole_enrollment";
 const noStore = { "Cache-Control": "no-store" };
 
 function json(data: unknown, status = 200) {
@@ -16,9 +17,9 @@ async function handle(request: NextRequest, context: Context) {
   const method = request.method;
   // Exact allowlist: this is not an arbitrary authenticated reverse proxy.
   const allowed = method === "GET"
-    ? /^(scenarios|me|rooms\/[1-9]\d*(\/(members|session|messages))?|sessions\/[1-9]\d*\/(private|suggestion|progression|turn(\/status)?|coach\/(messages|requests(\/[A-Za-z0-9_-]+)?)))$/.test(path)
+    ? /^(scenarios|me(\/score)?|rooms\/[1-9]\d*(\/(members|session|messages))?|sessions\/[1-9]\d*\/(peer-feedback|private|suggestion|progression|turn(\/status)?|coach\/(messages|requests(\/[A-Za-z0-9_-]+)?)))$/.test(path)
     : method === "POST"
-      ? /^(profiles|me|rooms|rooms\/join|rooms\/[1-9]\d*\/(join|leave|sessions|messages)|sessions\/[1-9]\d*\/(turn\/(actions|complete|recover)|coach\/(messages|requests\/[A-Za-z0-9_-]+\/(recover|complete))))$/.test(path)
+      ? /^(profiles(\/prepare)?|me|rooms|rooms\/join|rooms\/[1-9]\d*\/(join|leave|sessions|messages)|sessions\/[1-9]\d*\/(peer-feedback|turn\/(actions|complete|recover)|coach\/(messages|requests\/[A-Za-z0-9_-]+\/(recover|complete))))$/.test(path)
       : method === "DELETE" && path === "identity";
   if (!allowed) return json({ detail: "Not found" }, 404);
   if (method !== "GET") {
@@ -30,11 +31,28 @@ async function handle(request: NextRequest, context: Context) {
   if (method === "DELETE") {
     const response = json({ status: "signed_out" });
     response.cookies.set(identityCookie, "", { httpOnly: true, sameSite: "strict", path: "/", maxAge: 0 });
+    response.cookies.set(enrollmentCookie, "", { httpOnly: true, sameSite: "strict", path: "/", maxAge: 0 });
     return response;
   }
   const token = request.cookies.get(identityCookie)?.value;
-  if (!token && path !== "profiles" && path !== "scenarios") return json({ detail: "Identity required" }, 401);
+  if (!token && path !== "profiles" && path !== "profiles/prepare" && path !== "scenarios") return json({ detail: "Identity required" }, 401);
   try {
+    if (path === "profiles/prepare") {
+      if (token || request.cookies.get(enrollmentCookie)?.value) return json({ status: "ready" });
+      const prepared = await participantApi("profiles/prepare", "POST");
+      const data = await prepared.json();
+      if (!prepared.ok) return json({ detail: "Could not prepare profile creation" }, prepared.status);
+      if (typeof data.enrollment_token !== "string") return json({ detail: "Invalid enrollment response" }, 502);
+      const response = json({ status: "ready" });
+      response.cookies.set(enrollmentCookie, data.enrollment_token, {
+        httpOnly: true, sameSite: "strict", secure: process.env.ECHOROLE_COOKIE_SECURE !== "false",
+        path: "/", maxAge: identityMaxAge,
+      });
+      return response;
+    }
+    if (path === "profiles" && !token && !request.cookies.get(enrollmentCookie)?.value) {
+      return json({ detail: "Prepare profile creation before submitting" }, 428);
+    }
     // Repeated profile requests recover the cookie's identity, never overwrite it.
     if (path === "profiles" && token) {
       const existing = await participantApi("me", "GET", token);
@@ -44,7 +62,7 @@ async function handle(request: NextRequest, context: Context) {
     const turnIndex = request.nextUrl.searchParams.get("turn_index");
     if (turnIndex !== null && !/^[1-9]\d*$/.test(turnIndex)) return json({ detail: "Invalid turn index" }, 422);
     const upstreamPath = turnIndex ? `${path}?turn_index=${turnIndex}` : path;
-    const upstream = await participantApi(upstreamPath, method as "GET" | "POST", token, body);
+    const upstream = await participantApi(upstreamPath, method as "GET" | "POST", path === "profiles" ? request.cookies.get(enrollmentCookie)?.value : token, body);
     const data = await upstream.json();
     if (path === "profiles" && upstream.ok) {
       const { access_token, token_type: _tokenType, ...profile } = data;

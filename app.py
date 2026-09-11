@@ -38,9 +38,6 @@ from database import (
     get_recent_shared_chat_messages,
     get_recent_story_states,
     get_role_brief_history,
-    get_peer_feedback_for_session,
-    save_peer_feedback,
-    get_total_received_peer_feedback_points,
 )
 from scenario_library import (
     get_scenario_by_id,
@@ -840,6 +837,7 @@ def render_peer_feedback_card(
     current_user_id,
     other_member
 ):
+    feedback_state = services.peer_feedback_state(session_id, current_user_id)
     if current_turn < 3:
         return
 
@@ -852,11 +850,7 @@ def render_peer_feedback_card(
 
         rated_user_id = other_member[0] if len(other_member) > 0 else ""
         rated_display_name = normalize_app_text(other_member[1] if len(other_member) > 1 else "") or rated_user_id
-        existing_feedback = get_peer_feedback_for_session(
-            session_id=session_id,
-            rater_user_id=current_user_id,
-            rated_user_id=rated_user_id
-        )
+        existing_feedback = feedback_state['feedback']
 
         st.markdown(
             """
@@ -901,22 +895,12 @@ def render_peer_feedback_card(
                 st.error("Please choose a rating before submitting.")
                 return
 
-            saved_feedback = save_peer_feedback(
-                room_id=room_id,
-                session_id=session_id,
-                rater_user_id=current_user_id,
-                rated_user_id=rated_user_id,
-                star_rating=selected_rating,
-                comment=comment_value
-            )
-            if saved_feedback is None:
-                st.error("Feedback could not be saved.")
+            try:
+                services.submit_peer_feedback(session_id, current_user_id, rated_user_id,
+                                              selected_rating, comment_value)
+            except services.ApplicationError as exc:
+                st.error(str(exc))
             else:
-                bump_room_sync_event(
-                    room_id=room_id,
-                    session_id=session_id,
-                    event_type="peer_feedback_submitted"
-                )
                 st.success("Feedback submitted.")
                 st.rerun()
 
@@ -1722,7 +1706,7 @@ if st.session_state.room_id is None:
 # ---------- 4. Room / Session ----------
 else:
     user_profile = get_user_profile(st.session_state.user_id)
-    current_user_total_points = get_total_received_peer_feedback_points(st.session_state.user_id)
+    current_user_total_points = services.peer_score(st.session_state.user_id)['total_points']
     members = get_members_by_room(st.session_state.room_id)
     current_session = get_session_by_room(st.session_state.room_id)
     current_session_id_for_sync = current_session["id"] if current_session is not None else None

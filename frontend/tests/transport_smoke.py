@@ -77,6 +77,15 @@ def run():
                 return response.status, json.loads(response.read()), response.headers
         assert request('me')[0] == 401
         assert request('profiles', 'POST', {'display_name': 'Cross-site'}, request_origin='https://other.invalid')[0] == 403
+        assert request('profiles', 'POST', {'display_name': 'Unprepared'})[0] == 428
+        assert request('profiles/prepare', 'POST', request_origin='https://other.invalid')[0] == 403
+        prepared_status, prepared_body, prepared_headers = request('profiles/prepare', 'POST')
+        assert prepared_status == 200 and prepared_body == {'status': 'ready'}
+        assert 'HttpOnly' in prepared_headers['Set-Cookie'] and 'SameSite=strict' in prepared_headers['Set-Cookie']
+        assert 'enrollment_token' not in prepared_body
+        enrollment = next(c.value for c in jar if c.name == 'echorole_enrollment')
+        assert request('profiles/prepare', 'POST')[0] == 200
+        assert next(c.value for c in jar if c.name == 'echorole_enrollment') == enrollment
         status, profile, headers = request('profiles', 'POST', {'display_name': 'Browser Alice'})
         assert status == 201, profile
         assert 'access_token' not in profile and 'token_type' not in profile
@@ -98,6 +107,7 @@ def run():
         assert request('rooms', 'POST', request_origin='https://other.invalid')[0] == 403
         assert request('sessions/1/private')[0] == 404
         outsider = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+        assert request('profiles/prepare', 'POST', browser=outsider)[0] == 200
         assert request('profiles', 'POST', {'display_name': 'Browser Bob'}, browser=outsider)[0] == 201
         assert request(f'rooms/{room["id"]}', browser=outsider)[0] == 403
         assert request(f'rooms/{room["id"]}/join', 'POST', browser=outsider)[0] == 200

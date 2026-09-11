@@ -31,7 +31,8 @@ class StatefulTests(unittest.TestCase):
         self.alice, self.auth = self.profile('Alice')
 
     def profile(self, name):
-        response = self.client.post('/api/v1/profiles', json={'display_name': name, 'mbti': 'INFJ', 'priorities': 'trust'})
+        enrollment = self.client.post('/api/v1/profiles/prepare').json()['enrollment_token']
+        response = self.client.post('/api/v1/profiles', headers={'Authorization': 'Bearer ' + enrollment}, json={'display_name': name, 'mbti': 'INFJ', 'priorities': 'trust'})
         self.assertEqual(response.status_code, 201, response.text)
         body = response.json()
         return body, {'Authorization': 'Bearer ' + body['access_token']}

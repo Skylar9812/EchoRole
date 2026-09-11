@@ -69,3 +69,26 @@ def current_user(request: Request, credentials: HTTPAuthorizationCredentials | N
         return user_id
     except (ValueError, TypeError):
         raise HTTPException(401, "Valid bearer identity required", headers={"WWW-Authenticate": "Bearer"}) from None
+
+# Enrollment credentials are domain-separated from authenticated identity tokens.
+# Issuing one has no database side effects: response loss here cannot orphan a profile.
+def issue_enrollment(request):
+    payload = f"enroll.{uuid.uuid4()}.{int(time.time()) + TOKEN_LIFETIME}.{secrets.token_hex(32)}"
+    signature = hmac.new(request.app.state.identity_key, payload.encode(), hashlib.sha256).digest()
+    return payload + '.' + base64.urlsafe_b64encode(signature).decode().rstrip('=')
+
+
+def enrollment_user(request):
+    try:
+        header = request.headers.get('authorization', '')
+        if not header.startswith('Bearer '):
+            raise ValueError()
+        token = header[7:]
+        version, user_id, expiry, nonce, signature = token.split('.')
+        payload = f'{version}.{user_id}.{expiry}.{nonce}'
+        expected = base64.urlsafe_b64encode(hmac.new(request.app.state.identity_key, payload.encode(), hashlib.sha256).digest()).decode().rstrip('=')
+        if not hmac.compare_digest(signature, expected) or version != 'enroll' or str(uuid.UUID(user_id)) != user_id or int(expiry) <= time.time():
+            raise ValueError()
+        return user_id
+    except (ValueError, TypeError):
+        raise HTTPException(401, 'Valid enrollment credential required; prepare profile creation first') from None

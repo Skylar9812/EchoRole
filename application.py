@@ -203,3 +203,53 @@ def update_profile(user_id, display_name, mbti='', priorities=''):
             db.add_member(user_id, row['room_id'], display_name)
             db.bump_room_event_version(row['room_id'], 'profile_updated')
     return get_user_profile(user_id)
+
+@db.atomic
+def enroll_profile(user_id, display_name, mbti='', priorities=''):
+    """First successful payload wins; retry never creates or overwrites a profile."""
+    existing = get_user_profile(user_id)
+    if existing['updated_at']:
+        return existing
+    return create_profile(display_name, mbti, priorities, user_id)
+
+
+def peer_feedback_state(session_id, user_id):
+    require_session_member(session_id, user_id)
+    room_id = db.get_session_room_id(session_id)
+    session = db.get_session_by_room(room_id, session_id=session_id)
+    peer = next((m for m in db.get_members_by_room(room_id)
+                 if m[0] != user_id and db.get_user_role(session_id, m[0]) in ('role_a', 'role_b')), None)
+    saved = db.get_peer_feedback_for_session(session_id, user_id, peer[0]) if peer else None
+    reason = None
+    if session['current_turn'] < 3:
+        reason = 'Peer feedback becomes available from turn 3.'
+    elif not peer:
+        reason = 'Peer feedback becomes available once another participant is present.'
+    elif db.get_session_by_room(room_id)['id'] != session_id:
+        reason = 'Session changed; refresh before submitting feedback.'
+    return dict(available=reason is None, reason=reason,
+                peer_user_id=peer[0] if peer else None,
+                peer_name=(peer[1] or peer[0]) if peer else None,
+                feedback=saved,
+                rating_options=[dict(star_rating=n / 2, score_points=n * 5) for n in range(1, 11)])
+
+
+@db.atomic
+def submit_peer_feedback(session_id, user_id, peer_user_id, star_rating, comment=''):
+    state = peer_feedback_state(session_id, user_id)
+    if peer_user_id != state['peer_user_id']:
+        raise ApplicationError('Feedback recipient changed; refresh before submitting', 409)
+    if not state['available']:
+        raise ApplicationError(state['reason'], 409)
+    if state['feedback'] is not None:
+        return state  # Preserve Streamlit first-write-wins semantics, including edited retries.
+    if star_rating not in [o['star_rating'] for o in state['rating_options']]:
+        raise ApplicationError('Choose a rating from 0.5 to 5.0 in half-star steps', 422)
+    room_id = db.get_session_room_id(session_id)
+    db.save_peer_feedback(room_id, session_id, user_id, peer_user_id, star_rating, comment)
+    db.bump_room_event_version(room_id, 'peer_feedback_submitted', session_id)
+    return peer_feedback_state(session_id, user_id)
+
+
+def peer_score(user_id):
+    return {'total_points': db.get_total_received_peer_feedback_points(user_id)}

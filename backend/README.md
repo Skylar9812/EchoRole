@@ -23,7 +23,8 @@ All paths below have prefix `/api/v1`:
 | --- | --- | --- |
 | GET | `/health` | Process liveness |
 | GET | `/scenarios`, `/scenarios/categories`, `/scenarios/{scenario_id}` | Existing public scenario catalog |
-| POST | `/profiles` | `{display_name, mbti?, priorities?}`; creates UUID profile and returns bearer token (201) |
+| POST | `/profiles/prepare` | Issues signed enrollment credential; no profile write |
+| POST | `/profiles` | Enrollment bearer required; `{display_name, mbti?, priorities?}`; atomic create/replay, returns identity bearer (201) |
 | GET | `/me` | Recover the authenticated profile without returning a token |
 | POST | `/rooms` | No body; creates room and adds caller (201) |
 | POST | `/rooms/{room_id}/join` | No body; joins caller, activating available role if a session exists |
@@ -165,3 +166,35 @@ Coach, submission/waiting, joint advancement and evolved role/suggestion renderi
 
 These paths plus public scenario previews are explicitly allowed by Next.js.
 The frontend adds no database, AI, or room/session business logic.
+
+
+## Phase 4.5 parity additions
+
+`POST /profiles/prepare` returns `{enrollment_token}` to the server-side transport.
+It is a signed, random UUID credential with purpose `enroll`, domain-separated from
+`v1` identity tokens and valid for 30 days under the existing persistent signing key.
+It creates no database rows. `POST /profiles` now requires that credential as Bearer;
+missing/invalid/expired/wrong-purpose credentials return 401. Atomic create-or-read
+uses the credential UUID and the existing profile primary key; the first committed
+payload wins and later retries return the current profile without overwriting it.
+This works across workers/restarts, with no schema change. Clients must finish and
+retain preparation before creation. Next.js stores it only in an HttpOnly cookie,
+returns `{status: "ready"}`, requires mutation Origin and strips all credentials from
+browser JSON. Enrollment credentials never authorize any other endpoint.
+
+- `GET /me/score` → `{total_points}` for the authenticated participant only.
+- `GET /sessions/{id}/peer-feedback` → eligibility/reason, current peer ID/name,
+  Python-supplied rating options/points and the caller's own saved feedback or null.
+- `POST /sessions/{id}/peer-feedback` → same projection; body
+  `{peer_user_id, star_rating, comment?}`. Caller/room are derived from authentication
+  and session. Both parties must be current members and assigned in this session;
+  new feedback requires the current session and turn >= 3. Changed target or
+  unavailable feedback returns 409; invalid ratings return 422.
+
+Existing half-star UI values (0.5–5) go through the legacy database scoring helper:
+ten points per star, summed across all sessions for the recipient. The existing
+unique key enforces one rating per session/rater/recipient. The shared atomic service
+returns the first saved feedback on duplicate submissions (even edited retries),
+without duplicate points or event updates. Comments remain author-private, matching
+Streamlit; no received-comment or arbitrary user's score endpoint is added.
+Streamlit now uses the same feedback submission/eligibility and score service.

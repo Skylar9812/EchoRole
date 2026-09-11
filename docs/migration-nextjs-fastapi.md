@@ -190,3 +190,53 @@ covered by backend tests. No paid AI calls, push, merge or deployment.
 Before visual redesign: agree on whether a later functional scope should expose
 Streamlit peer feedback/points. The requested Phase 4 flow is otherwise available.
 Production identity/revocation/admission/HTTPS work remains separate from visual work.
+
+
+## Phase 4.5 — remaining functional parity
+
+Continued from `1296f18` on `migration/nextjs-fastapi`. Both identified parity gaps
+are closed without redesign, UI UX Pro Max, schema changes, external auth,
+WebSockets, deployment or unrelated product features.
+
+Peer feedback is available from turn 3 with another current assigned participant.
+The shared Python service retains Streamlit's half-star choices, ten points per
+star, one immutable rating per session/rater/recipient and cumulative received
+points. Existing database helpers and unique indexes are reused. The Next.js UI
+renders server-supplied choices/eligibility, its own saved private comment and its
+own total score. Polling updates feedback/scores. Retry preserves original payload
+and cannot duplicate points or room events. Streamlit calls the same service.
+Typed FastAPI allowlists expose only the caller's feedback and score.
+
+Initial profile creation now requires preparation. A signed enrollment credential
+is saved in an HttpOnly cookie before any profile write; FastAPI atomically creates
+or reads its fixed UUID. Preparation response loss produces no profile. Creation
+response loss is recovered through that same credential, including after reload or
+server restart. First successful payload wins; edited retries cannot overwrite it.
+The client serializes enrollment across tabs with Web Locks. Enrollment cannot
+access authenticated endpoints, and public UUIDs cannot claim profiles. Cookies
+retain the existing 30-day lifetime and explicit clear-identity removes both.
+Recovery after deletion/expiry of all credentials is intentionally not introduced.
+No credential is put in browser JSON or JavaScript storage. No new database schema.
+
+Verification: 45 backend tests (all previous 40 plus 5 parity/security/concurrency
+regressions), Next.js production build and typecheck, live transport smoke,
+two isolated Chromium contexts using a disposable database/local AI, and Streamlit
+AppTest through turn-3 feedback submission and 45-point scoring. Browser testing
+loses the initial profile response before retaining its identity cookie, reloads,
+retries with edited input and verifies the same UUID plus exactly two rows for two
+participants. Feedback response loss/replay awards points once; comments remain
+isolated and score updates reach the recipient. Existing turn/recovery/chat flow
+continues to pass. Test servers are stopped; no paid/external provider calls.
+
+The scoped functional parity gaps are closed and the app is ready for visual
+redesign. Production authentication/revocation/admission/HTTPS remain separate
+from visual work. Phase 4.5 stops here; no push or merge.
+
+Phase 4.5 changed files:
+- `app.py`, `application.py`
+- `backend/api.py`, `backend/identity.py`, `backend/schemas.py`, `backend/README.md`
+- `backend/tests/test_stateful.py`, `backend/tests/test_parity.py`, `backend/tests/streamlit_smoke.py`
+- `frontend/src/app/api/echorole/[...path]/route.ts`, `frontend/src/app/workflow.tsx`
+- `frontend/src/lib/client.ts`, `frontend/src/lib/contracts.ts`
+- `frontend/tests/transport_smoke.py`, `frontend/tests/ui_smoke.cjs`, `frontend/README.md`
+- `docs/migration-nextjs-fastapi.md`

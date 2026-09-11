@@ -1,4 +1,4 @@
-import type { Profile, ProfileInput, Room, Member, Scenario, Session, SharedMessage, PrivateState, CoachMessage, CoachResult, Suggestion, TurnStatus, ProgressionEntry, ChatSend, CoachSend, ActionSend, Recovery } from './contracts';
+import type { Profile, ProfileInput, Room, Member, Scenario, Session, SharedMessage, PrivateState, CoachMessage, CoachResult, Suggestion, TurnStatus, ProgressionEntry, ChatSend, CoachSend, ActionSend, Recovery, PeerFeedbackState, PeerFeedbackSend, PeerScore } from './contracts';
 export class ApiError extends Error {
   constructor(public status: number, message: string) { super(message); }
 }
@@ -11,7 +11,15 @@ async function request<T>(path: string, body?: unknown, method = body === undefi
   return data as T;
 }
 export const api = {
-  me: () => request<Profile>('me'), profile: (p: ProfileInput, edit = false) => request<Profile>(edit ? 'me' : 'profiles', p),
+  me: () => request<Profile>('me'), profile: async (p: ProfileInput, edit = false) => {
+    if (edit) return request<Profile>('me', p);
+    const enroll = async () => { await request<{status: string}>('profiles/prepare', {}); return request<Profile>('profiles', p); };
+    // Serialize enrollment across tabs so a concurrent prepare cannot replace its cookie.
+    return navigator.locks.request('echorole-enrollment', enroll);
+  },
+  score: () => request<PeerScore>('me/score'),
+  feedback: (id: number) => request<PeerFeedbackState>(`sessions/${id}/peer-feedback`),
+  sendFeedback: (id: number, body: PeerFeedbackSend) => request<PeerFeedbackState>(`sessions/${id}/peer-feedback`, body),
   signout: () => request('identity', undefined, 'DELETE'), scenarios: () => request<Scenario[]>('scenarios'),
   createRoom: (request_id: string) => request<Room>('rooms', {request_id}), join: (invite_code: string) => request<Room>('rooms/join', {invite_code}),
   room: (id: number) => request<Room>(`rooms/${id}`), members: (id: number) => request<Member[]>(`rooms/${id}/members`),

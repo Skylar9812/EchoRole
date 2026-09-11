@@ -72,3 +72,38 @@ class RoomCreate(BaseModel):
 
 class JoinCode(BaseModel):
     invite_code: str = Field(min_length=1, max_length=128)
+
+class EnrollmentResponse(BaseModel):
+    enrollment_token: str
+
+
+class PeerFeedbackSend(BaseModel):
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
+    peer_user_id: str
+    star_rating: float = Field(ge=0.5, le=5, allow_inf_nan=False)
+    comment: str = ''
+
+
+class PeerFeedback(BaseModel):
+    star_rating: float
+    score_points: int
+    comment: str
+    created_at: str
+
+
+class RatingOption(BaseModel):
+    star_rating: float
+    score_points: int
+
+
+class PeerFeedbackState(BaseModel):
+    available: bool
+    reason: str | None
+    peer_user_id: str | None
+    peer_name: str | None
+    feedback: PeerFeedback | None
+    rating_options: list[RatingOption]
+
+
+class PeerScore(BaseModel):
+    total_points: int
