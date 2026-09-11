@@ -255,3 +255,23 @@ Temporary code-native art slots are marked `hero`, `character`, `doorway`, and
 Verification includes build/typecheck, entry layouts at 375/768/1024/1440px,
 profile fields/edit/reload, identity lost-response recovery, and the existing
 two-browser room/session smoke. Local preview uses separate temporary SQLite data.
+
+## Lobby and scenario setup visual pass
+
+Continued from `679141b`. The preparation room now uses the approved landing's
+cream/sage tokens, editorial typography, thin surfaces, and doorway motif.
+`editorial.tsx` extracts the identical Brand, Arrow, and Doorway markup for reuse;
+landing styles remain unchanged. `lobby.tsx` is a presentational view with scoped
+CSS, scenario-first hierarchy, participant presence, secondary shared chat,
+collapsed profile editing, and explicit loading/update-retry states. Scenario
+text comes unchanged from the API. Active Session markup, backend behavior,
+polling, identity, authorization, and mutation request handling are preserved.
+
+Verification: production build and typecheck; 45 backend tests; Streamlit smoke;
+two independent Chromium contexts against a disposable database and local AI.
+Lobby checks cover join/leave polling, profile editing, shared chat, every
+category and exact preview content, session creation, loading and failed-update
+recovery, and 375/768/1024/1440px layouts without overflow. Existing identity
+recovery, private/shared separation, retry, turn, and feedback checks still pass.
+Desktop/mobile screenshots were reviewed. No final illustration assets added;
+the reusable CSS doorway remains a temporary illustration. Stop at Lobby / Setup.

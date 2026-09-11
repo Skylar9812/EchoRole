@@ -66,6 +66,8 @@ async function idle(page) { await page.waitForTimeout(100); await waitFor(async(
   const code=await alice.locator('strong').filter({hasText:/^[A-F0-9]{24}$/}).innerText();
   await bob.getByLabel('Invite code',{exact:true}).fill(code); await bob.getByRole('button',{name:'Join room',exact:true}).click(); await text(bob,'Alice UI'); await text(alice,'Bob UI');
 
+  await require('./lobby_checks.cjs')({alice,bob,origin,idle,text,waitFor,code});
+
   const options=await alice.locator('select').nth(1).locator('option').evaluateAll(xs=>xs.map(x=>x.value));
   await alice.locator('select').nth(1).selectOption(options[1]); await alice.getByRole('button',{name:'Start session',exact:true}).click();
   await text(alice,'Your role: role_a'); await text(bob,'Your role: role_b');

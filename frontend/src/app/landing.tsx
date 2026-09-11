@@ -3,6 +3,7 @@
 import type { FormEvent, ReactNode } from 'react';
 import type { Profile } from '@/lib/contracts';
 import styles from './landing.module.css';
+import { Brand, Arrow, Doorway } from './editorial';
 
 type LandingProps = {
   profile: Profile | null;
@@ -15,10 +16,6 @@ type LandingProps = {
   onJoin: (event: FormEvent<HTMLFormElement>) => void;
   onClearIdentity: () => void;
 };
-
-function Arrow() {
-  return <svg width="22" height="16" viewBox="0 0 22 16" fill="none" aria-hidden="true"><path d="M1 8h19M14 2l6 6-6 6" stroke="currentColor" strokeWidth="1.3" /></svg>;
-}
 
 /** Temporary, code-native paper composition. Replace slots with final art later. */
 function Scene() {
@@ -43,11 +40,7 @@ export default function Landing({ profile, score, busy, loading = false, feedbac
     <a className={styles.skip} href="#character">Skip to your profile</a>
     <div className={styles.shell}>
       <header className={styles.header}>
-        <a className={styles.brand} href="#top" aria-label="EchoRole home">
-          {/* Original brand asset, unchanged. */}
-          <img src="/echorole-icon.png" width="54" height="54" alt="" />
-          <span><strong>EchoRole</strong><small>CONVERSATION SIMULATIONS</small></span>
-        </a>
+        <Brand />
         <nav aria-label="Main navigation">
           <a href="#how-it-works">How it works</a><a href="#rooms">Enter a room</a>
           <a className={styles.profileLink} href="#character" aria-label={profile ? `Your profile: ${profile.display_name}` : 'Build your character'}>{profile ? profile.display_name.slice(0, 1).toUpperCase() : <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="8" r="3.5" stroke="currentColor" strokeWidth="1.4" /><path d="M5 21v-2a7 7 0 0 1 14 0v2" stroke="currentColor" strokeWidth="1.4" /></svg>}</a>
@@ -96,7 +89,7 @@ export default function Landing({ profile, score, busy, loading = false, feedbac
           <section className={styles.rooms} id="rooms" aria-label="Create or join a room">
             <h2 className={styles.srOnly}>Create or join a room</h2>
             <div className={styles.createPanel}>
-              <div className={styles.doorway} data-illustration-slot="doorway" aria-hidden="true"><span /><i /></div>
+              <Doorway />
               <div className={styles.roomCopy}><span className={styles.sectionNumber}>02 / A NEW BEGINNING</span><h2>Start a scenario</h2><p>A shared space. Two perspectives.<br />A conversation that could go differently.</p><button className={styles.primaryButton} onClick={onCreate} disabled={unavailable || !profile}>Create room<Arrow /></button></div>
               <p className={styles.roomNote}>A new<br />conversation<br />awaits.</p>
             </div>

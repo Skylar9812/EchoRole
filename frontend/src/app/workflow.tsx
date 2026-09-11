@@ -1,6 +1,7 @@
 'use client';
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import Landing from './landing';
+import Lobby from './lobby';
 import { api, ApiError, pending } from '@/lib/client';
 import type { Profile, ProfileInput, Room, Member, Scenario, Session, SharedMessage, PrivateState, CoachMessage, CoachResult, Suggestion, TurnStatus, ProgressionEntry, ChatSend, CoachSend, ActionSend, PeerFeedbackState, PeerFeedbackSend } from '@/lib/contracts';
 
@@ -94,6 +95,23 @@ export default function EchoRole() {
   }
   if (boot || !roomId) return <Landing profile={profile} score={score} busy={busy} loading={boot} feedback={feedback} onProfile={profileForm} onCreate={createRoom} onJoin={joinRoom} onClearIdentity={clearIdentity} />;
   const s = data?.session, t = data?.turn;
+  if (profile && !s) return <Lobby
+    profile={profile} score={score} roomId={roomId} room={data?.room}
+    members={data?.members} messages={data?.chat} catalog={catalog}
+    category={category} scenarioId={scenario} chat={chat} busy={busy}
+    pollError={pollError} feedback={feedback} onProfile={profileForm}
+    onCategory={value => { setCategory(value); setScenario(''); }} onScenario={setScenario}
+    onChat={setChat} onSendChat={() => void run(() => send('chat'))}
+    onRefresh={() => void refresh()} onClearIdentity={clearIdentity}
+    onLeave={() => void run(async () => { await api.leave(roomId); selectRoom(null); })}
+    onStart={() => void run(async () => {
+      const key = `echorole:${profile.user_id}:setup:${roomId}`;
+      const body = pending<{scenario_id: string; expected_session_id?: number}>(key, {scenario_id: scenario, expected_session_id: undefined});
+      await api.start(roomId, body.scenario_id, body.expected_session_id);
+      sessionStorage.removeItem(key); clear();
+    })}
+  />;
+
   return <main><h1>EchoRole</h1><p>Profile → Room → Scenario → Session</p>
     {feedback}
     {profile && <p>Peer score: {score} points</p>}
