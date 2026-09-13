@@ -17,3 +17,9 @@ debug_last_story_progression_prompt.txt
 # Local identity signing keys (including atomic publication temporaries)
 *.identity-key
 *.identity-key.*
+
+# Local provider credentials (examples are safe to version)
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml

@@ -198,3 +198,33 @@ returns the first saved feedback on duplicate submissions (even edited retries),
 without duplicate points or event updates. Comments remain author-private, matching
 Streamlit; no received-comment or arbitrary user's score endpoint is added.
 Streamlit now uses the same feedback submission/eligibility and score service.
+
+
+## Local real-model demo
+
+Set `ECHOROLE_AI_PROVIDER=llm`, `ECHOROLE_LLM_API_KEY`,
+`ECHOROLE_LLM_API_BASE`, and `ECHOROLE_LLM_MODEL` in the backend process environment.
+The provider base must support OpenAI-compatible `/chat/completions`; omit that
+suffix. Existing defaults are `https://api.deepseek.com` and `deepseek-v4-flash`.
+`DEEPSEEK_API_KEY` remains a supported alias. Use a model available to your account.
+FastAPI loads the project-root `.env` through python-dotenv before importing
+application configuration, independently of the working directory. Existing OS
+environment variables take precedence (including explicitly empty values).
+Values are loaded literally without interpolation and are never logged by the loader.
+Root `.env.example` lists variables; copy it to `.env` for local credentials.
+Local `.env*` secrets are ignored. Never put keys in NEXT_PUBLIC variables.
+Restart FastAPI after setting configuration. Set `ECHOROLE_DB_PATH` to a fresh
+local demo database and use fresh browser contexts; do not rewrite old messages.
+
+Missing keys / malformed base URLs produce a clear 503 before new generation
+claims. Provider failures and invalid output cannot save local templates as
+success: existing uncertain-operation recovery requires acknowledgement.
+Fix credentials before attempting recovery. Offline tests retain explicit local mode.
+Coach uses profile, role, scenario, turn, current situation and reflection context.
+RAG retrieval is included on the first Coach response (embedding retrieval with
+lexical fallback); later replies use recent conversation. Joint generation uses
+both actions, role/session context, turn history and shared chat, without RAG.
+Private suggestions come from the same joint model result, not a separate call.
+Initial briefs are scenario data; evolved briefs retain deterministic assembly.
+A real key is required for external verification; offline tests are not proof of
+real-model generation.

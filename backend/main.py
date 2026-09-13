@@ -1,4 +1,8 @@
 """Launch from the repository root: python -m uvicorn backend.main:app."""
+from backend.environment import load_local_environment
+
+load_local_environment()
+
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager

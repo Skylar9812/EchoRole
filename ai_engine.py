@@ -2725,7 +2725,7 @@ class DeepSeekOpenAICompatibleProvider(AIProvider):
         )
         api_key = self.config.resolved_llm_api_key()
         if api_key == "":
-            return fallback_result
+            raise RuntimeError("LLM provider failed; local fallback is disabled in LLM mode.")
 
         endpoint = f"{self.config.resolved_llm_api_base()}/chat/completions"
         timeout_seconds = self.config.resolved_llm_timeout_seconds()
@@ -2772,7 +2772,7 @@ class DeepSeekOpenAICompatibleProvider(AIProvider):
             )
 
             if not extraction["reply_extracted"]:
-                return fallback_result
+                raise RuntimeError("LLM provider failed; local fallback is disabled in LLM mode.")
 
             try:
                 parsed_result = _extract_json_object_from_text(extraction["text"])
@@ -2785,7 +2785,7 @@ class DeepSeekOpenAICompatibleProvider(AIProvider):
                     exception_message=str(exc),
                     raw_reply_preview=_short_debug_text(extraction["text"], 240)
                 )
-                return fallback_result
+                raise RuntimeError("LLM provider failed; local fallback is disabled in LLM mode.")
         except (
             error.HTTPError,
             error.URLError,
@@ -2804,7 +2804,7 @@ class DeepSeekOpenAICompatibleProvider(AIProvider):
                 fallback_reason=type(exc).__name__,
                 exception_message=str(exc)
             )
-            return fallback_result
+            raise RuntimeError("LLM provider failed; local fallback is disabled in LLM mode.")
 
     def generate_dynamic_ai_feedback(
         self,
@@ -2897,7 +2897,7 @@ class DeepSeekOpenAICompatibleProvider(AIProvider):
                 exception_type=debug_info["exception_type"] or None,
                 exception_message=debug_info["exception_message"] or None
             )
-            return fallback_feedback
+            raise RuntimeError("LLM provider failed; local fallback is disabled in LLM mode.")
 
         sync_debug("entering_provider")
         _log_provider_event(
@@ -3141,7 +3141,7 @@ class DeepSeekOpenAICompatibleProvider(AIProvider):
                 debug_trace_id=debug_trace_id,
                 fallback_reason="missing_api_key"
             )
-            return fallback_next_situation
+            raise RuntimeError("LLM provider failed; local fallback is disabled in LLM mode.")
 
         endpoint = f"{self.config.resolved_llm_api_base()}/chat/completions"
         timeout_seconds = self.config.resolved_llm_timeout_seconds()
@@ -3184,7 +3184,7 @@ class DeepSeekOpenAICompatibleProvider(AIProvider):
                     fallback_reason="empty_llm_reply",
                     http_status=http_status
                 )
-                return fallback_next_situation
+                raise RuntimeError("LLM provider failed; local fallback is disabled in LLM mode.")
 
             next_situation = _normalize_next_situation_response(extraction["text"])
             _log_provider_event(
@@ -3212,7 +3212,7 @@ class DeepSeekOpenAICompatibleProvider(AIProvider):
                 fallback_reason=type(exc).__name__,
                 exception_message=str(exc)
             )
-            return fallback_next_situation
+            raise RuntimeError("LLM provider failed; local fallback is disabled in LLM mode.")
 
     def generate_next_situation_from_joint_actions(
         self,
@@ -3257,7 +3257,7 @@ class DeepSeekOpenAICompatibleProvider(AIProvider):
                 fallback_shared_situation_preview=_short_debug_text(fallback_result["shared_situation"], 240),
                 **selection_debug
             )
-            return fallback_result
+            raise RuntimeError("LLM provider failed; local fallback is disabled in LLM mode.")
 
         endpoint = f"{self.config.resolved_llm_api_base()}/chat/completions"
         timeout_seconds = max(self.config.resolved_llm_timeout_seconds(), 60.0)
@@ -3318,7 +3318,7 @@ class DeepSeekOpenAICompatibleProvider(AIProvider):
                 raw_reply_preview=raw_reply_preview,
                 http_status=http_status
             )
-            return fallback_result
+            raise RuntimeError("LLM provider failed; local fallback is disabled in LLM mode.")
 
         _log_provider_event(
             "joint_turn_generation_started",
@@ -3396,7 +3396,7 @@ class DeepSeekOpenAICompatibleProvider(AIProvider):
             try:
                 parsed_result = _normalize_joint_turn_generation_result(
                     raw_json_result,
-                    fallback_result=fallback_result
+                    fallback_result={}
                 )
                 _validate_joint_story_progression_result(parsed_result)
             except ValueError as exc:
@@ -3442,7 +3442,7 @@ class DeepSeekOpenAICompatibleProvider(AIProvider):
                         retry_raw_json = _extract_json_object_from_text(retry_raw_reply_text)
                         parsed_result = _normalize_joint_turn_generation_result(
                             retry_raw_json,
-                            fallback_result=fallback_result
+                            fallback_result={}
                         )
                         _validate_joint_story_progression_result(parsed_result)
                         http_status = retry_http_status

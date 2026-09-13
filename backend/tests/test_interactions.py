@@ -45,6 +45,14 @@ class InteractionTests(unittest.TestCase):
     def action(self, auth, text='I ask to discuss our plans tonight.', turn=1):
         return self.client.post(self.url + '/turn/actions', headers=auth, json={'turn_index': turn, 'action_text': text})
 
+    def test_llm_missing_configuration_does_not_save_coach_reply(self):
+        with patch.dict(os.environ, {'ECHOROLE_AI_PROVIDER':'llm', 'ECHOROLE_LLM_API_KEY':'', 'DEEPSEEK_API_KEY':''}):
+            response = self.client.post(self.url + '/coach/messages', headers=self.auth, json={'turn_index':1, 'content':'I am worried.', 'request_id':'missing-config'})
+            self.assertEqual(response.status_code, 503)
+            self.assertIn('ECHOROLE_LLM_API_KEY', response.text)
+            self.fake.generate_dynamic_ai_feedback.assert_not_called()
+            self.assertIsNone(journal.get(service.coach_key(self.sid, self.alice['user_id'], 'missing-config')))
+
     def seed_actions(self):
         db.save_pending_turn_action(self.sid, 1, self.alice['user_id'], 'role_a', 'A action')
         db.save_pending_turn_action(self.sid, 1, self.bob['user_id'], 'role_b', 'B action')

@@ -1,5 +1,5 @@
 """Shared interactive orchestration. No HTTP/Streamlit imports or provider calls under DB locks."""
-from provider_boundary import observe
+from provider_boundary import observe, require_llm_configuration
 import database as db
 import application as app
 import operation_store as journal
@@ -180,6 +180,7 @@ def _claim_turn(session_id, user_id, turn_index):
             return None, False
         for row in by_role.values():
             app.require_session_member(session_id, row['user_id'])
+        require_llm_configuration()
         # Freeze the same legacy inputs, with both evolved briefs deterministically.
         inputs = dict(current_session=evolved_session(session),
                       role_a_action=by_role['role_a']['action_text'], role_b_action=by_role['role_b']['action_text'],
@@ -258,6 +259,7 @@ def recover_turn(session_id, user_id, turn_index, attempt_id, acknowledge_uncert
         raise app.ApplicationError('Explicit acknowledgement required', 422)
     with db.transaction():
         participant(session_id, user_id, turn_index, current=True)
+        require_llm_configuration()
         claim = journal.recover(turn_key(session_id, turn_index), attempt_id)
     _generate(claim)
     _persist_turn(claim['operation_key'])
@@ -295,6 +297,7 @@ def send_coach(session_id, user_id, turn_index, content, request_id):
     key = coach_key(session_id, user_id, request_id)
     old = journal.get(key)
     if not old:
+        require_llm_configuration()
         ensure_coach_prompt(session_id, user_id)
     with db.transaction():
         old = journal.get(key)
@@ -326,6 +329,7 @@ def recover_coach(session_id, user_id, request_id, attempt_id, acknowledge_uncer
         raise app.ApplicationError('Explicit acknowledgement required', 422)
     with db.transaction():
         participant(session_id, user_id)
+        require_llm_configuration()
         claim = journal.recover(coach_key(session_id, user_id, request_id), attempt_id)
     _generate(claim)
     _persist_coach(claim['operation_key'])
