@@ -1,3 +1,4 @@
+from contextlib import closing
 import os
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -136,6 +137,11 @@ def init_db():
     room_columns = [row["name"] for row in cursor.fetchall()]
     if "event_version" not in room_columns:
         cursor.execute("ALTER TABLE rooms ADD COLUMN event_version INTEGER NOT NULL DEFAULT 0")
+
+    if "language" not in room_columns:
+        cursor.execute("ALTER TABLE rooms ADD COLUMN language TEXT NOT NULL DEFAULT 'en' CHECK(language IN ('en','zh-CN','zh-TW'))")
+
+    cursor.execute("CREATE TABLE IF NOT EXISTS peer_feedback_requests (request_key TEXT PRIMARY KEY, payload_json TEXT NOT NULL)")
 
     # members
     cursor.execute("""
@@ -363,13 +369,13 @@ def init_db():
     conn.close()
 
 
-def create_room(invite_code):
+def create_room(invite_code, language="en"):
     conn = get_connection()
     cursor = conn.cursor()
 
     cursor.execute(
-        "INSERT INTO rooms (invite_code) VALUES (?)",
-        (invite_code,)
+        "INSERT INTO rooms (invite_code, language) VALUES (?, ?)",
+        (invite_code, language)
     )
 
     conn.commit()
@@ -2199,3 +2205,9 @@ def list_room_messages(room_id):
         ).fetchall()]
     finally:
         conn.close()
+
+
+def get_room_language(room_id):
+    with closing(get_connection()) as conn:
+        row = conn.execute("SELECT language FROM rooms WHERE id=?", (room_id,)).fetchone()
+        return row[0] if row else 'en'

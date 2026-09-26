@@ -40,13 +40,13 @@ def room_state(room_id):
     if room is None:
         raise ApplicationError("Room not found", 404)
     return dict(id=room[0], invite_code=room[1], created_at=room[2],
-                event_version=db.get_room_event_version(room_id))
+                event_version=db.get_room_event_version(room_id), language=db.get_room_language(room_id))
 
 
 @db.atomic
-def create_room(user_id, nickname, *, sync=None):
+def create_room(user_id, nickname, *, sync=None, language="en"):
     code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-    room_id = db.create_room(code)
+    room_id = db.create_room(code, language)
     db.add_member(user_id, room_id, nickname)
     (sync or db.bump_room_event_version)(room_id=room_id, event_type="room_created")
     return room_state(room_id)
@@ -88,6 +88,8 @@ def create_scenario_session(room_id, scenario, *, sync=None, expected_session_id
         scenario = get_scenario_by_id(scenario)
     if scenario is None:
         raise ApplicationError("Scenario not found", 404)
+    from room_language import localize_scenario
+    scenario = localize_scenario(scenario, db.get_room_language(room_id))
     current = db.get_session_by_room(room_id)
     if current is not None and current["id"] != expected_session_id:
         fields = ("title", "context", "conflict", "opening_situation", "role_a_brief", "role_b_brief")
@@ -162,16 +164,16 @@ def start_session(room_id, user_id, scenario_id, expected_session_id=None):
     return public_session(room_id)
 
 @db.atomic
-def create_room_retry_safe(user_id, request_id=None):
+def create_room_retry_safe(user_id, request_id=None, language="en"):
     if not request_id:
-        return create_room(user_id, get_user_profile(user_id)['display_name'])
+        return create_room(user_id, get_user_profile(user_id)['display_name'], language=language)
     import hashlib
     code = hashlib.sha256(f'{user_id}:{request_id}'.encode()).hexdigest()[:24].upper()
     existing = db.get_room_by_code(code)
     if existing:
         require_member(existing[0], user_id)
         return room_state(existing[0])
-    room_id = db.create_room(code)
+    room_id = db.create_room(code, language)
     db.add_member(user_id, room_id, get_user_profile(user_id)['display_name'])
     db.bump_room_event_version(room_id, 'room_created')
     return room_state(room_id)
@@ -235,14 +237,32 @@ def peer_feedback_state(session_id, user_id):
 
 
 @db.atomic
-def submit_peer_feedback(session_id, user_id, peer_user_id, star_rating, comment=''):
+def submit_peer_feedback(session_id, user_id, peer_user_id, star_rating, comment='', request_id=None):
     state = peer_feedback_state(session_id, user_id)
     if peer_user_id != state['peer_user_id']:
         raise ApplicationError('Feedback recipient changed; refresh before submitting', 409)
     if not state['available']:
         raise ApplicationError(state['reason'], 409)
+    if request_id:
+        import json
+        key = f'feedback:{session_id}:{user_id}:{request_id}'
+        payload = dict(peer_user_id=peer_user_id, star_rating=star_rating, comment=comment)
+        old = db.get_connection().execute('SELECT payload_json FROM peer_feedback_requests WHERE request_key=?',(key,)).fetchone()
+        if old:
+            if json.loads(old[0]) != payload:
+                raise ApplicationError('Request ID reused with different feedback')
+            return state
+        if star_rating not in (1, 2, 3, 4, 5):
+            raise ApplicationError('Choose a whole-star rating from 1 to 5', 422)
+        db.get_connection().execute('INSERT INTO peer_feedback_requests(request_key,payload_json) VALUES (?,?)',(key,json.dumps(payload,sort_keys=True)))
+        if state['feedback'] is not None:
+            db.get_connection().execute('UPDATE peer_feedback SET star_rating=?, score_points=?, comment=? WHERE session_id=? AND rater_user_id=? AND rated_user_id=?', (star_rating, int(star_rating * 10), comment, session_id, user_id, peer_user_id))
+        else:
+            db.save_peer_feedback(db.get_session_room_id(session_id), session_id, user_id, peer_user_id, star_rating, comment)
+        db.bump_room_event_version(db.get_session_room_id(session_id), 'peer_feedback_updated', session_id)
+        return peer_feedback_state(session_id, user_id)
     if state['feedback'] is not None:
-        return state  # Preserve Streamlit first-write-wins semantics, including edited retries.
+        return state  # Legacy clients retain first-write-wins retry semantics.
     if star_rating not in [o['star_rating'] for o in state['rating_options']]:
         raise ApplicationError('Choose a rating from 0.5 to 5.0 in half-star steps', 422)
     room_id = db.get_session_room_id(session_id)

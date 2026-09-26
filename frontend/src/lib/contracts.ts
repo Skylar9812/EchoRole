@@ -1,3 +1,4 @@
+export type Language = 'en' | 'zh-CN' | 'zh-TW';
 export type TurnStatus = {
   session_id: number; turn_index: number; current_turn: number;
   state: "action_required" | "submitted" | "waiting_for_other" | "generating" | "advanced" | "uncertain";
@@ -26,13 +27,13 @@ export type Recovery = { attempt_id: string; acknowledge_uncertain: true };
 
 export type Profile = { user_id: string; display_name: string; mbti: string; priorities: string };
 export type ProfileInput = Omit<Profile, 'user_id'>;
-export type Room = { id: number; invite_code: string; event_version: number; created_at: string };
+export type Room = { language: Language; id: number; invite_code: string; event_version: number; created_at: string };
 export type Member = { user_id: string; nickname: string | null; joined_at: string };
 export type Scenario = { id: string; title: string; category: string; context: string; conflict: string; opening_situation: string };
 export type Session = Omit<Scenario, 'id' | 'category'> & { id: number; room_id: number; current_turn: number; current_situation: string; created_at: string };
 
 export type PeerScore = { total_points: number };
-export type PeerFeedbackSend = { peer_user_id: string; star_rating: number; comment: string };
+export type PeerFeedbackSend = { request_id?: string; peer_user_id: string; star_rating: number; comment: string };
 export type PeerFeedbackState = {
   available: boolean; reason: string | null; peer_user_id: string | null; peer_name: string | null;
   feedback: { star_rating: number; score_points: number; comment: string; created_at: string } | null;

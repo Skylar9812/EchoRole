@@ -14,7 +14,7 @@ async function text(page, value) { await page.getByText(value, {exact:false}).fi
 async function idle(page) { await page.waitForTimeout(100); await waitFor(async()=> !(await page.getByRole('status').filter({hasText:'Request in progress'}).count()), 'UI busy'); }
 (async()=>{ try {
   for (const [cmd,args,cwd] of [[join(root,'backend/.venv/Scripts/python.exe'),['-m','uvicorn','backend.main:app','--host','127.0.0.1','--port','8317'],root], [process.execPath,['node_modules/next/dist/bin/next','start','--hostname','127.0.0.1','--port','3317'],join(root,'frontend')]]) {
-    const proc=spawn(cmd,args,{cwd,env,windowsHide:true,stdio:'pipe'}); procs.push(proc); proc.stderr.on('data',b=> { if(b.toString().includes('Error')) process.stderr.write(b); });
+    const proc=spawn(cmd,args,{cwd,env,windowsHide:true,stdio:'pipe'}); procs.push(proc); proc.stdout.resume(); proc.stderr.on('data',b=> { if(b.toString().includes('Error')) process.stderr.write(b); });
   }
   await waitFor(async()=>{try{return (await fetch(origin)).ok && (await fetch(env.ECHOROLE_API_URL+'/api/v1/health')).ok;}catch{return false;}},'startup');
   browser=await chromium.launch({headless:true, executablePath: process.env.ECHOROLE_CHROMIUM});
@@ -139,18 +139,17 @@ async function idle(page) { await page.waitForTimeout(100); await waitFor(async(
     if (route.request().method()==='POST' && !feedbackLost) {feedbackLost=true; await route.fetch(); await route.abort('failed');}
     else await route.continue();
   });
-  await alice.getByRole('combobox', {name: /^Peer rating/}).selectOption('4.5');
   await alice.getByLabel('Private comment',{exact:true}).fill('FEEDBACK_AUTHOR_ONLY');
-  await alice.getByRole('button',{name:'Submit feedback',exact:true}).click(); await idle(alice);
+  await alice.getByRole('radio',{name:'4 out of 5 stars',exact:true}).click(); await idle(alice);
   await alice.reload(); await text(alice,'Unconfirmed requests');
   await alice.getByRole('button',{name:'Retry original request',exact:true}).click(); await idle(alice);
-  await text(alice,'Feedback submitted: 4.5 stars — 45 points'); await text(bob,'Peer score: 45 points');
+  await text(alice,'4 stars — 40 points'); await text(bob,'Peer score: 40 points');
   assert(!(await bob.locator('body').innerText()).includes('FEEDBACK_AUTHOR_ONLY'));
-  await bob.getByRole('combobox', {name: /^Peer rating/}).selectOption('5');
-  await bob.getByRole('button',{name:'Submit feedback',exact:true}).click(); await idle(bob);
+  await bob.getByRole('radio',{name:'5 out of 5 stars',exact:true}).click(); await idle(bob);
   await text(alice,'Peer score: 50 points');
   await bob.getByRole('button',{name:'Leave room',exact:true}).click(); await text(bob,'Create or join a room'); await text(alice,'Waiting for another participant');
   await require('./stale_identity.cjs')({browser,origin,root,env,text,idle,alice});
+  await require('./localization_checks.cjs')({browser,origin,root,env});
   assert.equal(errors.length,0, errors.join('\n'));
   console.log('PASS: landing at 375/768/1024/1440px without overflow, profile fields/edit/reload, Create/Join Room; enrollment response loss restores identical identity with exactly two profiles; turn-3 peer feedback, private comments, score polling and exactly-once feedback retry; two isolated Chromium contexts: profiles, invite join, lobby polling, scenario, role isolation, private Coach, lost-response retry after reload (one shared row), shared chat, private pending action, waiting, joint advancement, history, refresh restoration, leave/member polling; mocked uncertain UI requires acknowledgement and sends fenced attempt; no browser exceptions.');
 } finally { if(browser) await browser.close(); for(const p of procs) p.kill(); await new Promise(r=>setTimeout(r,800)); rmSync(temp,{recursive:true,force:true}); } })().catch(e=>{ console.error(e.message?.split('Call log:')[0] || 'UI smoke failed'); process.exitCode=1; });

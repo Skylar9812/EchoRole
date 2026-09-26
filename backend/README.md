@@ -228,3 +228,30 @@ Private suggestions come from the same joint model result, not a separate call.
 Initial briefs are scenario data; evolved briefs retain deterministic assembly.
 A real key is required for external verification; offline tests are not proof of
 real-model generation.
+
+
+## Room language and editable feedback
+
+Initialization additively migrates `rooms.language` to a non-null, constrained
+`en` / `zh-CN` / `zh-TW` value. Existing rooms default to English. Room creation
+accepts `language`; no room-language update route exists. Replaying a successful
+creation request preserves the original room and its language. Members receive
+that language in room responses. `GET /scenarios?language=...` localizes public
+scenario fields; shared session creation localizes static private briefs using
+the persisted room language and the original scenario ID. Translations live in
+`locales/scenarios.*.json`; the original English library remains unchanged.
+
+AI operation inputs capture the trusted room language. Prompt builders apply it
+to Coach, action guidance and joint generation, including private suggestions and
+updated briefs. User input and RAG content are not translated. Provider transport,
+selection, retries, recovery and the operation journal are unchanged. The explicit
+local deterministic provider remains an English offline/demo implementation;
+room-controlled generated language applies to real LLM responses.
+
+`POST /sessions/{id}/peer-feedback` accepts an optional `request_id`. With an ID,
+whole-star ratings can be edited; an atomic deduplication record prevents retry
+replays from overwriting later ratings. Same-ID/different-payload requests conflict.
+The latest rating contributes 10–50 points rather than accumulating on each edit.
+Private comments remain visible only to their author. The additive
+`peer_feedback_requests` table is separate from the AI operation journal. Legacy
+clients omitting request IDs retain their existing first-write-wins semantics.

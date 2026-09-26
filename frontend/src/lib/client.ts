@@ -1,10 +1,16 @@
-import type { Profile, ProfileInput, Room, Member, Scenario, Session, SharedMessage, PrivateState, CoachMessage, CoachResult, Suggestion, TurnStatus, ProgressionEntry, ChatSend, CoachSend, ActionSend, Recovery, PeerFeedbackState, PeerFeedbackSend, PeerScore } from './contracts';
+import type { Language, Profile, ProfileInput, Room, Member, Scenario, Session, SharedMessage, PrivateState, CoachMessage, CoachResult, Suggestion, TurnStatus, ProgressionEntry, ChatSend, CoachSend, ActionSend, Recovery, PeerFeedbackState, PeerFeedbackSend, PeerScore } from './contracts';
 export class ApiError extends Error {
   constructor(public status: number, message: string, public code?: string) { super(message); }
 }
 async function request<T>(path: string, body?: unknown, method = body === undefined ? 'GET' : 'POST'): Promise<T> {
   let response: Response;
-  try { response = await fetch(`/api/echorole/${path}`, { method, credentials: 'same-origin', cache: 'no-store', headers: body === undefined ? {} : {'Content-Type': 'application/json'}, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(125000) }); }
+  // Some embedded or older desktop browsers do not implement AbortSignal.timeout.
+  // Do not fail every API call before it is sent merely because that optional
+  // convenience API is unavailable.
+  const timeout = typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+    ? AbortSignal.timeout(125000)
+    : undefined;
+  try { response = await fetch(`/api/echorole/${path}`, { method, credentials: 'same-origin', cache: 'no-store', headers: body === undefined ? {} : {'Content-Type': 'application/json'}, body: body === undefined ? undefined : JSON.stringify(body), ...(timeout ? {signal: timeout} : {}) }); }
   catch { throw new ApiError(0, 'Connection interrupted. The request may still finish. Retry the same request or refresh status.'); }
   const data = await response.json();
   if (!response.ok) throw new ApiError(response.status, typeof data.detail === 'string' ? data.detail : 'Invalid request. Check the fields and retry.', data.code);
@@ -20,8 +26,8 @@ export const api = {
   score: () => request<PeerScore>('me/score'),
   feedback: (id: number) => request<PeerFeedbackState>(`sessions/${id}/peer-feedback`),
   sendFeedback: (id: number, body: PeerFeedbackSend) => request<PeerFeedbackState>(`sessions/${id}/peer-feedback`, body),
-  signout: () => request('identity', undefined, 'DELETE'), scenarios: () => request<Scenario[]>('scenarios'),
-  createRoom: (request_id: string) => request<Room>('rooms', {request_id}), join: (invite_code: string) => request<Room>('rooms/join', {invite_code}),
+  signout: () => request('identity', undefined, 'DELETE'), scenarios: (language: Language = 'en') => request<Scenario[]>(`scenarios?language=${language}`),
+  createRoom: (request_id: string, language: Language = 'en') => request<Room>('rooms', {request_id, language}), join: (invite_code: string) => request<Room>('rooms/join', {invite_code}),
   room: (id: number) => request<Room>(`rooms/${id}`), members: (id: number) => request<Member[]>(`rooms/${id}/members`),
   leave: (id: number) => request(`rooms/${id}/leave`, {}), session: (id: number) => request<Session | null>(`rooms/${id}/session`),
   start: (id: number, scenario_id: string, expected_session_id?: number) => request<Session>(`rooms/${id}/sessions`, {scenario_id, expected_session_id}),

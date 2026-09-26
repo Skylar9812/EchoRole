@@ -130,3 +130,34 @@ assertion, feedback retry without duplicate points, private-comment isolation,
 concurrent initial enrollment and restart replay, and real Streamlit feedback.
 Both Phase 4 parity gaps are closed. Real authentication, revocation, admission
 policy and HTTPS remain separate prerequisites for external exposure.
+
+
+## Room localization, editable ratings and shared chat
+
+`src/i18n/{en,zh-CN,zh-TW}.json` hold product strings. English source strings
+are stable lookup keys; numbered placeholders keep dynamic values separate.
+`I18nProvider` remembers the pre-room preference locally. The authenticated room
+snapshot is authoritative while inside a room; joining and reloading inherit its
+language, and leaving restores the preferred Landing language. Catalog requests
+include language, but session creation always submits the unchanged scenario ID.
+User-authored names, messages, comments and actions are displayed unchanged.
+
+The shared `PeerRating` component saves whole stars immediately and saves edited
+comments explicitly. Each change has a UUID persisted with its original payload
+until confirmed. Replaying an older successful request cannot overwrite a newer
+rating. Points are server-owned (10 points per star, maximum 50); the cumulative
+score uses the latest saved rating. Legacy Streamlit submissions without request
+IDs keep their existing first-write-wins behavior and half-star compatibility.
+
+`SharedChat` is reused in Lobby and Active Session. It keeps ordered messages in a
+bounded scroll area, right-aligns the current user's bubbles, supports Enter to
+send / Shift+Enter to insert a newline (including IME composition protection),
+and scrolls on new messages only when already near the bottom or sending a message.
+Existing request IDs, polling, authorization and uncertain AI recovery are unchanged.
+
+Run `node frontend/tests/ui_smoke.cjs` from the repository root after building for
+isolated local-provider, two-browser coverage including all three room languages.
+`node frontend/tests/real_language_smoke.cjs` runs the shorter language flow;
+set `ECHOROLE_REAL_AI_TEST=1` only to opt into one real, fictional Coach request
+using locally configured credentials. Neither test replays existing private data.
+Optional `ECHOROLE_SCREENSHOTS` stores responsive screenshots outside the repository.

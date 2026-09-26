@@ -3,6 +3,7 @@
 Do not import the Streamlit entry point: its top-level code initializes the DB
 and renders UI. Stateful routes use the shared application module.
 """
+from room_language import localize_scenario
 from scenario_library import (
     get_scenario_by_id,
     get_scenario_categories,
@@ -15,10 +16,10 @@ def scenario_categories() -> list[str]:
     return get_scenario_categories()
 
 
-def scenario_previews(category: str | None = None) -> list[ScenarioPreview]:
+def scenario_previews(category: str | None = None, language="en") -> list[ScenarioPreview]:
     categories = [category] if category is not None else scenario_categories()
     return [
-        ScenarioPreview.model_validate(scenario)
+        ScenarioPreview.model_validate(localize_scenario(scenario, language))
         for item in categories
         for scenario in get_scenarios_by_category(item)
     ]

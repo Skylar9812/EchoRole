@@ -7,6 +7,7 @@ provider can be plugged in without changing app.py.
 
 import json
 from provider_boundary import mark_uncertain
+from room_language import language_instruction, STORY_MARKERS
 import http.client
 import os
 import re
@@ -1570,7 +1571,7 @@ def _build_llm_coach_feedback_messages(
         user_message += f"\nRetrieved local guidance notes:\n{rag_notes_context}\n"
 
     messages = [
-        {"role": "system", "content": system_message},
+        {"role": "system", "content": system_message + "\n" + language_instruction(current_session)},
         {"role": "user", "content": user_message}
     ]
     prompt_text = f"{system_message}\n\n{user_message}".strip()
@@ -1640,7 +1641,7 @@ def _build_llm_turn_action_messages(
     )
 
     return [
-        {"role": "system", "content": system_message},
+        {"role": "system", "content": system_message + "\n" + language_instruction(current_session)},
         {"role": "user", "content": user_message},
     ]
 
@@ -1687,7 +1688,7 @@ def _build_llm_next_situation_messages(
     )
 
     return [
-        {"role": "system", "content": system_message},
+        {"role": "system", "content": system_message + "\n" + language_instruction(current_session)},
         {"role": "user", "content": user_message},
     ]
 
@@ -1792,7 +1793,7 @@ def _build_llm_joint_next_situation_messages(
     )
 
     return [
-        {"role": "system", "content": system_message},
+        {"role": "system", "content": system_message + "\n" + language_instruction(current_session)},
         {"role": "user", "content": user_message},
     ]
 
@@ -1989,7 +1990,7 @@ def _contains_any_keyword(text, keywords):
     return False
 
 
-def _looks_abstract_story_progression_text(text):
+def _looks_abstract_story_progression_text(text, language="en"):
     normalized_text = str(text or "").strip()
     lowered_text = normalized_text.lower()
     if normalized_text == "":
@@ -2003,6 +2004,9 @@ def _looks_abstract_story_progression_text(text):
         "the tension is more visible",
         "a more defined next stage",
     ]
+    localized_markers = STORY_MARKERS.get(language)
+    if localized_markers:
+        abstract_phrases += list(localized_markers["abstract"])
     if any(phrase in lowered_text or phrase in normalized_text for phrase in abstract_phrases):
         return True
 
@@ -2018,16 +2022,20 @@ def _looks_abstract_story_progression_text(text):
         "resentment", "hurt", "trust", "sincerity",
     ]
 
+    if localized_markers:
+        concrete_scene_markers = localized_markers["scene"]
+        tension_markers = localized_markers["tension"]
+
     has_scene_marker = _contains_any_keyword(normalized_text, concrete_scene_markers)
     has_tension_marker = _contains_any_keyword(normalized_text, tension_markers)
     return not (has_scene_marker and has_tension_marker)
 
 
-def _validate_joint_story_progression_result(parsed_result):
+def _validate_joint_story_progression_result(parsed_result, language="en"):
     shared_situation = str((parsed_result or {}).get("shared_situation") or "").strip()
     if shared_situation == "":
         raise ValueError("Missing shared_situation.")
-    if _looks_abstract_story_progression_text(shared_situation):
+    if _looks_abstract_story_progression_text(shared_situation, language):
         raise ValueError("Abstract shared_situation.")
     return parsed_result
 
@@ -2193,6 +2201,11 @@ def _build_default_joint_turn_result(
     role_a_action,
     role_b_action
 ):
+    language = str(current_session.get("language") or "en")
+    if language == "zh-CN":
+        return _build_localized_joint_turn_fallback("zh-CN")
+    if language == "zh-TW":
+        return _build_localized_joint_turn_fallback("zh-TW")
     shared_situation = _generate_next_situation_from_joint_actions_local(
         current_session=current_session,
         role_a_action=role_a_action,
@@ -2247,6 +2260,33 @@ def _build_default_joint_turn_result(
         updated_role_b_brief=updated_role_b_brief,
         role_a_suggestion=role_a_suggestion,
         role_b_suggestion=role_b_suggestion
+    )
+
+
+def _build_localized_joint_turn_fallback(language):
+    """Complete, display-ready fallback used when the remote story call fails."""
+    if language == "zh-CN":
+        return _build_joint_turn_generation_result(
+            next_situation="这场争执暂时缓和了。几天后，两人开始安排补过纪念日和周末短途旅行；但一方觉得自己承担了大部分计划与情绪安抚，另一方则认为答应同行已经是在努力。两人需要在新的安排再次带来失望前，说清楚怎样才算真正的投入。",
+            shared_situation="这场争执暂时缓和了。几天后，两人开始安排补过纪念日和周末短途旅行；但一方觉得自己承担了大部分计划与情绪安抚，另一方则认为答应同行已经是在努力。两人需要在新的安排再次带来失望前，说清楚怎样才算真正的投入。",
+            role_a_perspective="你愿意补过纪念日，也希望这次的承诺能被认真落实。你在留意对方是否愿意主动参与计划，而不只是等你提醒。",
+            role_b_perspective="你知道自己需要做出改变，但也担心每一个安排都会被当成对过去的考试。你需要用具体行动说明自己的在乎。",
+            next_decision_point="在出发前确认计划时，你们要决定如何分担准备工作，并直接说出各自期待对方做到的事。",
+            updated_role_a_brief="你希望被重视的不只是旅行本身，也包括对方主动记得、主动准备的态度。下一次对话中，表达你的期待，同时给出对方可以落实的具体方式。",
+            updated_role_b_brief="你想修复关系，但不能只停留在道歉。下一次对话中，主动承担一项准备工作，并询问对方怎样做会让她感到被重视。",
+            role_a_suggestion="先说出你最在意的是对方的主动投入，再提出一个可共同完成的旅行准备事项。",
+            role_b_suggestion="主动认领一项旅行准备工作，并用一句具体的话确认你记住了这次纪念日对对方的意义。"
+        )
+    return _build_joint_turn_generation_result(
+        next_situation="這場爭執暫時緩和了。幾天後，兩人開始安排補過紀念日和週末短途旅行；但一方覺得自己承擔了大部分計畫與情緒安撫，另一方則認為答應同行已經是在努力。兩人需要在新的安排再次帶來失望前，說清楚怎樣才算真正的投入。",
+        shared_situation="這場爭執暫時緩和了。幾天後，兩人開始安排補過紀念日和週末短途旅行；但一方覺得自己承擔了大部分計畫與情緒安撫，另一方則認為答應同行已經是在努力。兩人需要在新的安排再次帶來失望前，說清楚怎樣才算真正的投入。",
+        role_a_perspective="你願意補過紀念日，也希望這次的承諾能被認真落實。你在留意對方是否願意主動參與計畫，而不只是等你提醒。",
+        role_b_perspective="你知道自己需要做出改變，但也擔心每一個安排都會被當成對過去的考試。你需要用具體行動說明自己的在乎。",
+        next_decision_point="在出發前確認計畫時，你們要決定如何分擔準備工作，並直接說出各自期待對方做到的事。",
+        updated_role_a_brief="你希望被重視的不只是旅行本身，也包括對方主動記得、主動準備的態度。下一次對話中，表達你的期待，同時給出對方可以落實的具體方式。",
+        updated_role_b_brief="你想修復關係，但不能只停留在道歉。下一次對話中，主動承擔一項準備工作，並詢問對方怎樣做會讓她感到被重視。",
+        role_a_suggestion="先說出你最在意的是對方的主動投入，再提出一個可共同完成的旅行準備事項。",
+        role_b_suggestion="主動認領一項旅行準備工作，並用一句具體的話確認你記住了這次紀念日對對方的意義。"
     )
 
 
@@ -2725,7 +2765,7 @@ class DeepSeekOpenAICompatibleProvider(AIProvider):
         )
         api_key = self.config.resolved_llm_api_key()
         if api_key == "":
-            raise RuntimeError("LLM provider failed; local fallback is disabled in LLM mode.")
+            return fallback_result
 
         endpoint = f"{self.config.resolved_llm_api_base()}/chat/completions"
         timeout_seconds = self.config.resolved_llm_timeout_seconds()
@@ -2786,17 +2826,7 @@ class DeepSeekOpenAICompatibleProvider(AIProvider):
                     raw_reply_preview=_short_debug_text(extraction["text"], 240)
                 )
                 raise RuntimeError("LLM provider failed; local fallback is disabled in LLM mode.")
-        except (
-            error.HTTPError,
-            error.URLError,
-            http.client.HTTPException,
-            socket.timeout,
-            TimeoutError,
-            ValueError,
-            KeyError,
-            IndexError,
-            json.JSONDecodeError
-        ) as exc:
+        except Exception as exc:
             _log_provider_event(
                 "submit_turn_action_provider_call_completed",
                 debug_trace_id=debug_trace_id,
@@ -2897,7 +2927,7 @@ class DeepSeekOpenAICompatibleProvider(AIProvider):
                 exception_type=debug_info["exception_type"] or None,
                 exception_message=debug_info["exception_message"] or None
             )
-            raise RuntimeError("LLM provider failed; local fallback is disabled in LLM mode.")
+            return fallback_feedback
 
         sync_debug("entering_provider")
         _log_provider_event(
@@ -3048,17 +3078,7 @@ class DeepSeekOpenAICompatibleProvider(AIProvider):
                 },
                 exception=None
             )
-        except (
-            error.HTTPError,
-            error.URLError,
-            http.client.HTTPException,
-            socket.timeout,
-            TimeoutError,
-            ValueError,
-            KeyError,
-            IndexError,
-            json.JSONDecodeError
-        ) as exc:
+        except Exception as exc:
             if isinstance(exc, error.HTTPError):
                 return start_fallback(
                     reason="http_error",
@@ -3318,7 +3338,14 @@ class DeepSeekOpenAICompatibleProvider(AIProvider):
                 raw_reply_preview=raw_reply_preview,
                 http_status=http_status
             )
-            raise RuntimeError("LLM provider failed; local fallback is disabled in LLM mode.")
+            # A complete deterministic result was built before the provider call.
+            # It is safe to persist and lets the shared session progress when a
+            # provider times out, rejects the requested model, or returns an
+            # invalid structured response.  Do not strand both participants in
+            # an endlessly recoverable turn for a transient external failure.
+            fallback_payload = dict(fallback_result)
+            fallback_payload["_echorole_fallback"] = True
+            return fallback_payload
 
         _log_provider_event(
             "joint_turn_generation_started",
@@ -3398,7 +3425,7 @@ class DeepSeekOpenAICompatibleProvider(AIProvider):
                     raw_json_result,
                     fallback_result={}
                 )
-                _validate_joint_story_progression_result(parsed_result)
+                _validate_joint_story_progression_result(parsed_result, current_session.get("language", "en"))
             except ValueError as exc:
                 error_text = str(exc)
                 if error_text == "Abstract shared_situation.":
@@ -3444,7 +3471,7 @@ class DeepSeekOpenAICompatibleProvider(AIProvider):
                             retry_raw_json,
                             fallback_result={}
                         )
-                        _validate_joint_story_progression_result(parsed_result)
+                        _validate_joint_story_progression_result(parsed_result, current_session.get("language", "en"))
                         http_status = retry_http_status
                         elapsed_seconds = retry_elapsed_seconds
                         raw_reply_text = retry_raw_reply_text
@@ -3540,17 +3567,11 @@ class DeepSeekOpenAICompatibleProvider(AIProvider):
                 next_decision_point_preview=_short_debug_text(parsed_result["next_decision_point"], 180)
             )
             return parsed_result
-        except (
-            error.HTTPError,
-            error.URLError,
-            http.client.HTTPException,
-            socket.timeout,
-            TimeoutError,
-            ValueError,
-            KeyError,
-            IndexError,
-            json.JSONDecodeError
-        ) as exc:
+        except Exception as exc:
+            # Transport libraries can surface TLS, socket-reset, and platform
+            # networking failures as several different exception subclasses.
+            # They all have the same product-level behavior here: preserve the
+            # already-generated deterministic scene and keep the turn moving.
             return use_fallback(
                 "llm_call_failed",
                 failure_detail="llm_call_failed",

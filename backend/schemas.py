@@ -23,6 +23,7 @@ class ProfileResponse(ProfileState):
 
 
 class RoomResponse(BaseModel):
+    language: Literal["en", "zh-CN", "zh-TW"] = "en"
     id: int
     invite_code: str
     created_at: str
@@ -67,6 +68,7 @@ class ScenarioPreview(BaseModel):
     opening_situation: str
 
 class RoomCreate(BaseModel):
+    language: Literal["en", "zh-CN", "zh-TW"] = "en"
     request_id: str | None = Field(default=None, pattern=r'^[A-Za-z0-9_-]{1,128}$')
 
 
@@ -78,6 +80,7 @@ class EnrollmentResponse(BaseModel):
 
 
 class PeerFeedbackSend(BaseModel):
+    request_id: str | None = Field(default=None, min_length=1, max_length=128)
     model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
     peer_user_id: str
     star_rating: float = Field(ge=0.5, le=5, allow_inf_nan=False)

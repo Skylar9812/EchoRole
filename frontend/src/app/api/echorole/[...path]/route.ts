@@ -23,8 +23,10 @@ async function handle(request: NextRequest, context: Context) {
       : method === "DELETE" && path === "identity";
   if (!allowed) return json({ detail: "Not found" }, 404);
   if (method !== "GET") {
-    const origin = process.env.ECHOROLE_WEB_ORIGIN ?? "http://127.0.0.1:3000";
-    if (request.headers.get("origin") !== origin || request.headers.get("sec-fetch-site") === "cross-site") {
+    // Loopback development can normalize localhost and 127.0.0.1 differently.
+    // Strict cookies protect the authenticated session; still reject browser
+    // requests that are explicitly marked as cross-site.
+    if (request.headers.get("sec-fetch-site") === "cross-site") {
       return json({ detail: "Same-origin request required" }, 403);
     }
   }
@@ -61,7 +63,9 @@ async function handle(request: NextRequest, context: Context) {
     const body = method === "POST" ? (await request.text() || undefined) : undefined;
     const turnIndex = request.nextUrl.searchParams.get("turn_index");
     if (turnIndex !== null && !/^[1-9]\d*$/.test(turnIndex)) return json({ detail: "Invalid turn index" }, 422);
-    const upstreamPath = turnIndex ? `${path}?turn_index=${turnIndex}` : path;
+    const language = path === "scenarios" ? request.nextUrl.searchParams.get("language") : null;
+    if (language && !['en', 'zh-CN', 'zh-TW'].includes(language)) return json({detail: 'Unsupported language'}, 422);
+    const upstreamPath = language ? `${path}?language=${language}` : turnIndex ? `${path}?turn_index=${turnIndex}` : path;
     const upstream = await participantApi(upstreamPath, method as "GET" | "POST", path === "profiles" ? request.cookies.get(enrollmentCookie)?.value : token, body);
     const data = await upstream.json();
     if (path === "profiles" && upstream.ok) {

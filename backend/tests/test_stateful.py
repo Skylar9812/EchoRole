@@ -125,9 +125,13 @@ class StatefulTests(unittest.TestCase):
         baseline = str(Path(self.path).with_name('baseline.db'))
         namespace['DB_NAME'] = baseline
         namespace['init_db']()
+        # This feature intentionally adds one room-language column; all other legacy schema stays identical.
+        with closing(sqlite3.connect(baseline)) as conn:
+            conn.execute("ALTER TABLE rooms ADD COLUMN language TEXT NOT NULL DEFAULT 'en' CHECK(language IN ('en','zh-CN','zh-TW'))")
+            conn.commit()
         def schema(path):
             with closing(sqlite3.connect(path)) as conn:
-                return conn.execute("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE tbl_name != 'operation_journal' ORDER BY type, name").fetchall()
+                return conn.execute("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE tbl_name NOT IN ('operation_journal','peer_feedback_requests') ORDER BY type, name").fetchall()
         self.assertEqual(schema(self.path), schema(baseline))
         with closing(sqlite3.connect(self.path)) as conn:
             self.assertEqual(conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='operation_journal'").fetchone()[0], 'operation_journal')

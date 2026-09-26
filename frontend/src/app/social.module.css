@@ -1,0 +1,18 @@
+.chat { min-width:0; }
+.history { max-height:340px; min-height:100px; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; padding:8px 4px; margin:18px 0; }
+.history ol { list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:18px; }
+.history li { display:flex; align-items:flex-start; gap:8px; max-width:88%; }
+.history li > div { min-width:0; }
+.own { align-self:flex-end; flex-direction:row-reverse; }
+.other { align-self:flex-start; }
+.avatar { display:grid; place-items:center; flex-shrink:0; width:28px; height:28px; border-radius:50%; background:var(--sage-light); color:var(--sage); font-size:12px; }
+.meta { display:flex; flex-wrap:wrap; gap:8px; align-items:baseline; font-size:11px; margin-bottom:5px; color:var(--muted); }
+.own .meta { justify-content:flex-end; }
+.bubble { white-space:pre-wrap; overflow-wrap:anywhere; padding:11px 14px; border:1px solid var(--line); border-radius:14px; background:var(--paper); }
+.own .bubble { background:var(--sage-light); border-bottom-right-radius:4px; }
+.other .bubble { border-bottom-left-radius:4px; }
+.hint { font-size:11px; color:var(--muted); }
+.stars { display:flex; flex-wrap:nowrap; gap:2px; margin:14px 0; }
+.stars button { display:grid; place-items:center; min-width:44px; min-height:44px; padding:6px; border:0; background:transparent; color:var(--sage); box-shadow:none; }
+.stars button:focus-visible { outline:2px solid var(--sage); outline-offset:2px; }
+@media(max-width:480px){.history li{max-width:100%}.history{max-height:300px}.avatar{display:none}}

@@ -53,6 +53,74 @@ class InteractionTests(unittest.TestCase):
             self.fake.generate_dynamic_ai_feedback.assert_not_called()
             self.assertIsNone(journal.get(service.coach_key(self.sid, self.alice['user_id'], 'missing-config')))
 
+    def test_room_languages_persist_inherit_and_use_stable_scenario_ids(self):
+        from room_language import localize_scenario
+        for language in ('en','zh-CN','zh-TW'):
+            created = self.client.post('/api/v1/rooms', headers=self.auth, json={'request_id':'lang-'+language,'language':language})
+            self.assertEqual(created.status_code, 201, created.text)
+            room = created.json()
+            self.assertEqual(room['language'], language)
+            replay = self.client.post('/api/v1/rooms', headers=self.auth, json={'request_id':'lang-'+language,'language':'en'}).json()
+            self.assertEqual(replay['language'], language)
+            joined=self.client.post('/api/v1/rooms/join', headers=self.bauth,json={'invite_code':room['invite_code']}).json()
+            self.assertEqual(joined['language'],language)
+            catalog=self.client.get('/api/v1/scenarios',params={'language':language}).json()
+            self.assertEqual(catalog[0]['id'],self.scenario['id'])
+            originals=self.client.get('/api/v1/scenarios').json()
+            self.assertEqual([x['id'] for x in catalog],[x['id'] for x in originals])
+            if language != 'en':
+                from room_language import scenario_translations
+                translations=scenario_translations(language)
+                self.assertEqual(set(translations),{x['id'] for x in originals})
+                for translated in translations.values():
+                    for field in ('category','title','context','conflict','opening_situation','role_a_brief','role_b_brief'):
+                        self.assertTrue(translated[field])
+            result=self.client.post(f"/api/v1/rooms/{room['id']}/sessions",headers=self.auth,json={'scenario_id':self.scenario['id']})
+            self.assertEqual(result.status_code,201,result.text)
+            session=result.json()
+            self.assertEqual(session['title'],catalog[0]['title'])
+            private=self.client.get(f"/api/v1/sessions/{session['id']}/private",headers=self.auth).json()
+            self.assertEqual(private['brief'],localize_scenario(self.scenario,language)['role_a_brief'])
+            self.assertEqual(self.client.patch(f"/api/v1/rooms/{room['id']}",headers=self.auth,json={'language':'en'}).status_code,405)
+        self.assertEqual(self.client.post('/api/v1/rooms',headers=self.auth,json={'language':'fr'}).status_code,422)
+
+    def test_editable_whole_stars_use_deduplication_and_latest_points(self):
+        with closing(db.get_connection()) as conn:
+            conn.execute('UPDATE sessions SET current_stage=3 WHERE id=?',(self.sid,))
+            conn.commit()
+        url=self.url+'/peer-feedback'
+        first=None
+        for n in range(1,6):
+            body={'request_id':f'rating-{n}','peer_user_id':self.bob['user_id'],'star_rating':n,'comment':'PRIVATE comment'}
+            result=self.client.post(url,headers=self.auth,json=body)
+            self.assertEqual(result.status_code,200,result.text)
+            self.assertEqual(result.json()['feedback']['score_points'],n*10)
+            self.assertEqual(app.peer_score(self.bob['user_id'])['total_points'],n*10)
+            self.assertEqual(self.client.post(url,headers=self.auth,json=body).status_code,200)
+            if first is None:first=body
+        self.client.post(url,headers=self.auth,json=first)
+        self.assertEqual(app.peer_score(self.bob['user_id'])['total_points'],50)
+        changed={**first,'star_rating':4}
+        self.assertEqual(self.client.post(url,headers=self.auth,json=changed).status_code,409)
+        self.assertEqual(self.client.post(url,headers=self.auth,json={**first,'request_id':'half','star_rating':4.5}).status_code,422)
+        self.assertNotIn('PRIVATE comment',self.client.get(url,headers=self.bauth).text)
+        lower={**first,'request_id':'lower','star_rating':2,'comment':'Edited private comment'}
+        self.assertEqual(self.client.post(url,headers=self.auth,json=lower).status_code,200)
+        self.assertEqual(app.peer_score(self.bob['user_id'])['total_points'],20)
+        self.assertEqual(self.client.get(url,headers=self.auth).json()['feedback']['comment'],'Edited private comment')
+
+    def test_ai_prompts_obey_room_language_without_rewriting_user_input(self):
+        import ai_engine as ai
+        for language,label in [('en','English'),('zh-CN','Simplified Chinese'),('zh-TW','Traditional Chinese')]:
+            session={**self.scenario,'language':language,'current_turn':1}
+            with patch.object(ai,'retrieve_relevant_notes',return_value=[]):
+                bundle=ai._build_llm_coach_feedback_messages(session,'role_a','UNCHANGED USER INPUT',1,'Situation')
+            self.assertIn('Room response language: '+label,bundle['messages'][0]['content'])
+            self.assertIn('UNCHANGED USER INPUT',bundle['messages'][1]['content'])
+            joint=ai._build_llm_joint_next_situation_messages(session,'ACTION A','ACTION B')
+            self.assertIn('Room response language: '+label,joint[0]['content'])
+            self.assertIn('ACTION A',joint[1]['content'])
+
     def seed_actions(self):
         db.save_pending_turn_action(self.sid, 1, self.alice['user_id'], 'role_a', 'A action')
         db.save_pending_turn_action(self.sid, 1, self.bob['user_id'], 'role_b', 'B action')
@@ -283,6 +351,7 @@ s.advance_turn(int(os.environ['SESSION_ID']),os.environ['PARTICIPANT'],1)
                 self.assertEqual([tuple(r) for r in conn.execute('SELECT * FROM user_profiles')],before)
                 self.assertEqual(conn.execute('SELECT COUNT(*) FROM operation_journal').fetchone()[0],0)
             self.assertEqual(db.get_members_by_room(rid)[0][0],'legacy-user')
+            self.assertEqual(db.get_room_language(rid), 'en')
 
     def test_real_transport_observer_records_timeout_and_remains_request_local(self):
         # Inspect the real transport method in a separate process to preserve the

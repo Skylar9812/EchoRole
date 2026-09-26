@@ -1,11 +1,15 @@
+'use client';
+import {useT} from '@/i18n/context';
 import Image from 'next/image';
 import styles from './landing.module.css';
 
 /** Shared editorial primitives, using the approved landing markup and styles. */
 export function Brand() {
-  return <a className={styles.brand} href="#top" aria-label="EchoRole home">
+ const tr=useT();
+
+  return <a className={styles.brand} href="#top" aria-label={tr("EchoRole home")}>
     <img src="/echorole-icon.png" width="54" height="54" alt="" />
-    <span><strong>EchoRole</strong><small>CONVERSATION SIMULATIONS</small></span>
+    <span><strong>EchoRole</strong><small>{tr("CONVERSATION SIMULATIONS")}</small></span>
   </a>;
 }
 

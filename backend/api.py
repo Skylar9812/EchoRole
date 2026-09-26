@@ -1,3 +1,4 @@
+from typing import Literal
 from fastapi import APIRouter, HTTPException, Depends, Request
 import application as services
 from backend.identity import current_user, issue_identity, issue_enrollment, enrollment_user
@@ -23,7 +24,7 @@ def me(user_id: str = Depends(current_user)):
 
 @router.post("/rooms", response_model=RoomResponse, status_code=201)
 def create_room(body: RoomCreate | None = None, user_id: str = Depends(current_user)):
-    return services.create_room_retry_safe(user_id, body.request_id if body else None)
+    return services.create_room_retry_safe(user_id, body.request_id if body else None, body.language if body else "en")
 
 
 @router.post("/rooms/{room_id}/join", response_model=RoomResponse)
@@ -63,9 +64,9 @@ def categories() -> list[str]:
 
 
 @router.get("/scenarios", response_model=list[ScenarioPreview], tags=["scenarios"])
-def scenarios(category: str | None = None) -> list[ScenarioPreview]:
+def scenarios(category: str | None = None, language: Literal["en", "zh-CN", "zh-TW"] = "en") -> list[ScenarioPreview]:
     """Public previews, optionally filtered by exact legacy category. Unknown category: []."""
-    return legacy.scenario_previews(category)
+    return legacy.scenario_previews(category, language)
 
 
 @router.get("/scenarios/{scenario_id}", response_model=ScenarioPreview, tags=["scenarios"])

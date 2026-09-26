@@ -19,6 +19,7 @@ def participant(session_id, user_id, turn_index=None, *, current=False):
         raise app.ApplicationError('Session was replaced; reload the room')
     if turn_index is not None and session['current_turn'] != turn_index:
         raise app.ApplicationError('Stale turn; reload the current turn')
+    session = dict(session, language=db.get_room_language(session['room_id']))
     return session, role
 
 
@@ -199,6 +200,7 @@ def _claim_turn(session_id, user_id, turn_index):
 def _generate(claim):
     key, attempt = claim['operation_key'], claim['attempt_id']
     inputs = dict(claim['input'])
+    used_fallback = False
     try:
         with observe() as outcome:
             if claim['kind'] == 'turn':
@@ -210,7 +212,13 @@ def _generate(claim):
                 result = {'reply': text(engine().generate_dynamic_ai_feedback(**inputs, debug_trace_id=attempt))}
                 if not result['reply'].strip():
                     raise ValueError('Empty Coach result')
-        if outcome['uncertain']:
+                debug = getattr(engine(), 'get_last_ai_debug_info', lambda: {})()
+                used_fallback = bool(debug.get('used_fallback'))
+        # A provider transport failure is normally uncertain.  The turn
+        # provider may, however, explicitly return a complete deterministic
+        # fallback scene; that result is safe to persist exactly once.
+        used_fallback = used_fallback or (isinstance(result, dict) and result.pop('_echorole_fallback', False))
+        if outcome['uncertain'] and not used_fallback:
             raise RuntimeError('External transport outcome uncertain')
         with db.transaction():
             journal.publish(key, attempt, result)
